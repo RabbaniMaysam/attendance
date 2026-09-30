@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 
 let bad = 0;
-for (const page of ['index.html', 'admin.html']) {
+for (const page of ['index.html', 'admin.html', 'attendance.html', 'attendance_admin.html']) {
   const html = fs.readFileSync(new URL('../docs/' + page, import.meta.url), 'utf8');
   const code = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(x => x[1]).join('\n');
   try { new vm.Script(code, { filename: page }); console.log(page, 'parses,', code.split('\n').length, 'lines'); }

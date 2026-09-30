@@ -31,3 +31,19 @@ CREATE TABLE IF NOT EXISTS snapshots (
 );
 
 CREATE INDEX IF NOT EXISTS snap_class ON snapshots (class, id);
+
+-- Attendance tool (src/attendance.js): one row per attendance class, settings and roster as JSON.
+CREATE TABLE IF NOT EXISTS att_classes (
+  key   TEXT PRIMARY KEY,
+  state TEXT NOT NULL
+);
+
+-- One row per student per class day. by = 'student' when pressed on the page, 'instructor' when set on the instructor page.
+CREATE TABLE IF NOT EXISTS att_marks (
+  class TEXT NOT NULL,
+  date  TEXT NOT NULL,
+  email TEXT NOT NULL,
+  time  TEXT NOT NULL,
+  by    TEXT NOT NULL DEFAULT 'student',
+  PRIMARY KEY (class, date, email)
+);

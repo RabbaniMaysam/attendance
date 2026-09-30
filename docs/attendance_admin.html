@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Attendance: instructor page</title>
+  <script src="https://accounts.google.com/gsi/client" async></script>
+  <script src="config.js"></script>
+  <style>
+    :root { --ink: #1f2328; --muted: #5c6670; --line: #d8dde3; --bg: #f6f7f9; --card: #fff;
+            --accent: #0b5cad; --ok: #1a7f37; --warn: #b3261e; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink);
+           font: 14px/1.45 -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
+    main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 60px; }
+    h1 { font-size: 22px; margin: 0 0 4px; }
+    h2 { font-size: 17px; margin: 0 0 10px; }
+    p { margin: 0 0 10px; }
+    .muted { color: var(--muted); }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-top: 14px; }
+    .banner { padding: 9px 14px; border-radius: 8px; margin-top: 12px; }
+    .banner.err { background: #fdecea; color: var(--warn); border: 1px solid #f3c1bc; }
+    .banner.ok { background: #e8f5ec; color: var(--ok); border: 1px solid #b9dfc4; }
+    .banner.note { background: #fff4d6; color: #6b4e00; border: 1px solid #ecd58f; }
+    .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+    .scroll { overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { text-align: left; vertical-align: top; padding: 6px 8px; border-top: 1px solid var(--line); white-space: nowrap; }
+    th { border-top: 0; font-size: 13px; color: var(--muted); font-weight: 600; }
+    th.date { writing-mode: vertical-rl; transform: rotate(180deg); text-align: left; padding: 8px 4px; font-weight: 500; }
+    td.mark { text-align: center; }
+    td.mark button { width: 30px; height: 26px; padding: 0; border-radius: 5px; border: 1px solid var(--line); background: #fff; color: transparent; }
+    td.mark button.on { background: #dff3e4; border-color: var(--ok); color: var(--ok); font-weight: 700; }
+    td.mark button.inst { background: #fff0b3; border-color: #b58900; color: #6b4e00; font-weight: 700; }
+    td.total { text-align: right; font-weight: 600; }
+    button { font: inherit; padding: 4px 11px; border-radius: 6px; border: 1px solid var(--accent);
+             background: var(--accent); color: #fff; cursor: pointer; }
+    button.plain { background: #fff; color: var(--accent); }
+    button.danger { background: #fff; color: var(--warn); border-color: var(--warn); }
+    button.link { border: 0; background: none; color: var(--accent); padding: 0; text-decoration: underline; }
+    button.tab { background: #fff; color: var(--ink); border-color: var(--line); }
+    button.tab.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+    button:disabled { opacity: .5; cursor: default; }
+    input, select, textarea { font: inherit; padding: 4px 7px; border: 1px solid var(--line); border-radius: 6px; max-width: 100%; }
+    textarea { min-height: 60px; width: 100%; }
+    label { display: inline-flex; align-items: center; gap: 6px; }
+    dl { display: grid; grid-template-columns: max-content 1fr; gap: 8px 14px; margin: 0 0 12px; align-items: center; }
+    dt { color: var(--muted); }
+    dd { margin: 0; }
+    code { background: #eef1f4; padding: 1px 5px; border-radius: 4px; }
+    .swatch { display: inline-block; width: 14px; height: 14px; border: 1px solid var(--line); border-radius: 3px; vertical-align: -2px; }
+    .swatch.on { background: #dff3e4; border-color: var(--ok); }
+    .swatch.inst { background: #fff0b3; border-color: #b58900; }
+    .veil { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); display: flex; align-items: center;
+            justify-content: center; padding: 16px; z-index: 10; }
+    .modal { background: #fff; border-radius: 10px; padding: 20px; width: 100%; max-width: 480px;
+             box-shadow: 0 10px 40px rgba(0, 0, 0, .3); }
+    .modal h2 { margin-bottom: 8px; }
+    .modal p { margin: 0 0 8px; }
+    .modal .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+    button.danger.solid { background: var(--warn); color: #fff; }
+  </style>
+</head>
+<body>
+<main>
+  <div id="app"><p class="muted">Loading...</p></div>
+  <div id="signin" hidden></div>
+</main>
+<script>
+  var API = (window.SIGNUP_API || '').replace(/\/+$/, '');
+  var TOKEN_KEY = 'signup_token';  // shared with the sign-up instructor page: one sign-in serves both
+  var TZ = 'America/New_York';
+  var DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  var TABS = ['Attendance', 'Settings', 'Roster'];
+  var token = '', me = '', classes = [], cur = '', D = null, tab = 'Attendance';
+  var flash = null, busy = false, timer = null;
+  try { token = sessionStorage.getItem(TOKEN_KEY) || ''; cur = sessionStorage.getItem('att_admin_class') || ''; } catch (e) {}
+
+  // ---------------------------------------------------------------- plumbing
+
+  function el(tag, attrs) {
+    var e = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) {
+      if (k === 'text') e.textContent = attrs[k];
+      else if (k === 'value') e.value = attrs[k];
+      else if (k === 'on') Object.keys(attrs.on).forEach(function (ev) { e.addEventListener(ev, attrs.on[ev]); });
+      else if (attrs[k] !== false && attrs[k] !== null) e.setAttribute(k, attrs[k] === true ? '' : attrs[k]);
+    });
+    for (var i = 2; i < arguments.length; i++) {
+      var kid = arguments[i];
+      if (kid === null || kid === undefined || kid === false) continue;
+      e.appendChild(typeof kid === 'string' ? document.createTextNode(kid) : kid);
+    }
+    return e;
+  }
+
+  function setToken(t) {
+    token = t || '';
+    try { token ? sessionStorage.setItem(TOKEN_KEY, token) : sessionStorage.removeItem(TOKEN_KEY); } catch (e) {}
+  }
+
+  function setClass(key) {
+    cur = key || ''; D = null;
+    try { sessionStorage.setItem('att_admin_class', cur); } catch (e) {}
+  }
+
+  function call(action, args, key) {
+    return fetch(API + '/att/admin', { method: 'POST',
+      body: JSON.stringify({ token: token, class: key === undefined ? cur : key, action: action, args: args || [] }) })
+      .then(function (r) { return r.json(); })
+      .then(function (out) {
+        if (out.ok) return out.data;
+        if (out.error === 'SIGNIN') { setToken(''); showSignIn(); throw new Error('SIGNIN'); }
+        throw new Error(out.error);
+      });
+  }
+
+  function fail(e) {
+    busy = false;
+    if (e.message === 'SIGNIN') return;
+    flash = { err: e.message }; render();
+  }
+
+  /** Runs one instructor action on the current class and redraws. */
+  function run(action, args, okText) {
+    busy = true; flash = null;
+    call(action, args).then(function (d) {
+      busy = false; D = d; flash = okText ? { ok: okText } : null;
+      render();
+      if (action === 'saveSettings') refreshClasses();
+    }).catch(fail);
+  }
+
+  function refreshClasses() {
+    call('whoami', [], '').then(function (d) { classes = d.classes; render(); }).catch(function () {});
+  }
+
+  function loadClass(quiet) {
+    if (!cur) { render(); return; }
+    call('get').then(function (d) { D = d; if (!busy) render(); }).catch(function (e) { if (!quiet) fail(e); });
+  }
+
+  // While the Attendance tab is shown, the grid refreshes every 10 seconds so marks appear as students press the button.
+  function poll() {
+    clearTimeout(timer);
+    timer = setTimeout(function () { if (tab === 'Attendance' && cur && !document.hidden) loadClass(true); poll(); }, 10000);
+  }
+
+  function start() {
+    call('whoami', [], '').then(function (d) {
+      me = d.email; classes = d.classes;
+      if (!classes.some(function (c) { return c.key === cur; })) setClass(classes.length ? classes[0].key : '');
+      loadClass(false); poll();
+    }).catch(function (e) {
+      if (e.message === 'SIGNIN') return;
+      var app = document.getElementById('app');
+      app.innerHTML = '';
+      app.appendChild(el('div', { class: 'banner err', text: e.message }));
+      app.appendChild(el('p', {}, el('button', { class: 'link', text: 'Sign out', on: { click: signOut } })));
+    });
+  }
+
+  // ---------------------------------------------------------------- sign-in
+
+  function whenGoogleReady(fn) {
+    if (window.google && google.accounts && google.accounts.id) fn();
+    else setTimeout(function () { whenGoogleReady(fn); }, 100);
+  }
+
+  function showSignIn() {
+    var app = document.getElementById('app'), box = document.getElementById('signin');
+    app.innerHTML = '';
+    app.appendChild(el('h1', { text: 'Attendance: instructor page' }));
+    app.appendChild(el('p', { class: 'muted', text: 'Sign in with an instructor account.' }));
+    box.hidden = false; box.innerHTML = '';
+    whenGoogleReady(function () { google.accounts.id.renderButton(box, { theme: 'outline', size: 'large', text: 'signin_with' }); });
+  }
+
+  function signOut() {
+    setToken(''); D = null;
+    whenGoogleReady(function () { google.accounts.id.disableAutoSelect(); });
+    showSignIn();
+  }
+
+  function boot() {
+    var app = document.getElementById('app');
+    fetch(API + '/att/config').then(function (r) { return r.json(); }).then(function (c) {
+      whenGoogleReady(function () {
+        google.accounts.id.initialize({ client_id: c.clientId, callback: function (resp) {
+          setToken(resp.credential);
+          document.getElementById('signin').hidden = true;
+          start();
+        } });
+      });
+      if (token) start(); else showSignIn();
+    }).catch(function () {
+      app.innerHTML = '';
+      app.appendChild(el('div', { class: 'banner err', text: 'The attendance service did not respond. Reload the page in a minute.' }));
+    });
+  }
+
+  // ---------------------------------------------------------------- helpers
+
+  function clock(hhmm) { var h = Number(hhmm.split(':')[0]), m = hhmm.split(':')[1]; return ((h + 11) % 12 + 1) + ':' + m + (h < 12 ? ' am' : ' pm'); }
+  function shortDate(ymd) { return new Intl.DateTimeFormat('en-US', { timeZone: TZ, weekday: 'short', month: 'short', day: 'numeric' }).format(new Date(ymd + 'T12:00:00-05:00')); }
+  function isoClock(iso) { return new Intl.DateTimeFormat('en-US', { timeZone: TZ, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(iso)); }
+  function fullName(r) { return (r.first + ' ' + r.last).trim(); }
+  function studentLink() { return location.href.replace(/attendance_admin\.html.*$/, '') + 'attendance.html?c=' + encodeURIComponent(cur); }
+  function button(label, cls, fn) { return el('button', { text: label, class: cls, disabled: busy, on: { click: fn } }); }
+
+  function download(name, rows) {
+    var csv = rows.map(function (r) {
+      return r.map(function (v) { return '"' + String(v === null || v === undefined ? '' : v).replace(/"/g, '""') + '"'; }).join(',');
+    }).join('\r\n');
+    var a = el('a', { href: URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv' })), download: name });
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+
+  /** A confirmation pop-up. Resolves to true when confirmed. */
+  function ask(title, lines, okLabel, danger) {
+    return new Promise(function (resolve) {
+      var veil;
+      var done = function (yes) { veil.remove(); document.removeEventListener('keydown', onKey); resolve(yes); };
+      var onKey = function (ev) { if (ev.key === 'Escape') done(false); };
+      var box = el('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' }, el('h2', { text: title }));
+      lines.forEach(function (l) { box.appendChild(el('p', { text: l })); });
+      var ok = el('button', { text: okLabel, class: danger ? 'danger solid' : '', on: { click: function () { done(true); } } });
+      box.appendChild(el('div', { class: 'buttons' },
+        el('button', { class: 'plain', text: 'Cancel', on: { click: function () { done(false); } } }), ok));
+      veil = el('div', { class: 'veil', on: { click: function (ev) { if (ev.target === veil) done(false); } } }, box);
+      document.body.appendChild(veil);
+      document.addEventListener('keydown', onKey);
+      ok.focus();
+    });
+  }
+
+  // ---------------------------------------------------------------- rendering
+
+  function render() {
+    var app = document.getElementById('app');
+    var keepScroll = window.scrollY;
+    app.innerHTML = '';
+    document.getElementById('signin').hidden = true;
+    app.appendChild(el('h1', { text: 'Attendance: instructor page' }));
+    app.appendChild(el('p', { class: 'muted' }, 'Signed in as ' + me + '. ',
+      el('button', { class: 'link', text: 'Sign out', on: { click: signOut } }), ' · ',
+      el('a', { href: 'admin.html', text: 'Group sign-up instructor page' })));
+
+    // class chooser and creation
+    var chooser = el('div', { class: 'row' });
+    if (classes.length) {
+      var sel = el('select', { disabled: busy, on: { change: function (ev) { setClass(ev.target.value); flash = null; loadClass(false); } } });
+      classes.forEach(function (c) { sel.appendChild(el('option', { value: c.key, text: (c.title || c.key) + ' (' + c.key + ')' })); });
+      sel.value = cur;
+      chooser.appendChild(el('label', {}, 'Class ', sel));
+    }
+    var keyIn = el('input', { type: 'text', placeholder: 'new key, e.g. econ101-fall2026', size: 26 });
+    var titleIn = el('input', { type: 'text', placeholder: 'title, e.g. ECON 101 Fall 2026', size: 26 });
+    chooser.appendChild(el('span', { class: 'muted', text: classes.length ? 'or create:' : 'Create a class:' }));
+    chooser.appendChild(keyIn); chooser.appendChild(titleIn);
+    chooser.appendChild(button('Create', 'plain', function () {
+      busy = true; flash = null;
+      call('createClass', [keyIn.value, titleIn.value], '').then(function (d) {
+        busy = false; classes = d.classes; setClass(d.key); flash = { ok: 'Class created. Import the roster and check the schedule.' };
+        tab = 'Roster'; loadClass(false);
+      }).catch(fail);
+    }));
+    app.appendChild(el('div', { class: 'card' }, chooser,
+      cur ? el('p', { class: 'muted', style: 'margin:0' }, 'Student link: ', el('code', { text: studentLink() })) : null));
+    if (flash) app.appendChild(el('div', { class: 'banner ' + (flash.err ? 'err' : 'ok'), text: flash.err || flash.ok }));
+    if (!cur) { app.appendChild(el('p', { class: 'muted', style: 'margin-top:12px', text: 'No attendance class exists yet. Create one above.' })); return; }
+    if (!D) { app.appendChild(el('p', { class: 'muted', text: 'Loading...' })); return; }
+
+    var tabs = el('div', { class: 'tabs' });
+    TABS.forEach(function (t) {
+      tabs.appendChild(el('button', { class: 'tab' + (t === tab ? ' on' : ''), text: t, on: { click: function () { tab = t; flash = null; render(); } } }));
+    });
+    app.appendChild(tabs);
+    var card = el('div', { class: 'card' });
+    ({ Attendance: attendance, Settings: settings, Roster: roster })[tab](card);
+    app.appendChild(card);
+    window.scrollTo(0, keepScroll);
+  }
+
+  // ---- Attendance grid
+  function attendance(card) {
+    var S = D.state;
+    var status = D.open
+      ? el('div', { class: 'banner ok', style: 'margin:0 0 12px', text: 'Attendance is OPEN now, until ' + clock(D.open.close) + '. ' + D.marks.filter(function (m) { return m.date === D.today; }).length + ' of ' + S.roster.length + ' students marked so far.' })
+      : el('div', { class: 'banner note', style: 'margin:0 0 12px', text: 'Attendance is closed. ' + (D.next ? 'Next window: ' + shortDate(D.next.date) + ', ' + clock(D.next.open) + ' to ' + clock(D.next.close) + '.' : 'No upcoming class is scheduled.') });
+    card.appendChild(status);
+    var minutes = el('input', { type: 'number', min: 1, max: 600, value: 10, style: 'width:70px' });
+    card.appendChild(el('div', { class: 'row' },
+      button('Open attendance now', '', function () {
+        ask('Open attendance now for ' + minutes.value + ' minutes?', ['Students can mark themselves present until ' + minutes.value + ' minutes from now. This adds a one-off window for today (see Settings).'], 'Open now', false)
+          .then(function (yes) { if (yes) run('openNow', [Number(minutes.value)], 'Attendance is open.'); });
+      }), el('label', {}, 'for ', minutes, ' minutes'),
+      el('span', { class: 'muted', text: '·' }),
+      button('Download CSV', 'plain', function () {
+        var head = ['Last name', 'First name', 'Email'].concat(D.sessions, ['Present', 'Sessions']);
+        var rows = [head].concat(S.roster.map(function (r) {
+          var cells = D.sessions.map(function (d) { return has(d, r.email) ? 1 : 0; });
+          return [r.last, r.first, r.email].concat(cells, [cells.reduce(function (a, b) { return a + b; }, 0), D.sessions.length]);
+        }));
+        download('attendance_' + cur + '_' + D.today + '.csv', rows);
+      })));
+    if (!S.roster.length) { card.appendChild(el('p', { class: 'muted', text: 'The roster is empty. Import it on the Roster tab.' })); return; }
+    var byKey = {};
+    D.marks.forEach(function (m) { byKey[m.date + '|' + m.email] = m; });
+    function has(d, email) { return !!byKey[d + '|' + email]; }
+    var head = el('tr', {}, el('th', { text: 'Student' }));
+    D.sessions.forEach(function (d) { head.appendChild(el('th', { class: 'date', text: shortDate(d) })); });
+    head.appendChild(el('th', { text: 'Present' }));
+    var t = el('table', {}, head);
+    S.roster.forEach(function (r) {
+      var tr = el('tr', {}, el('td', {}, fullName(r), el('div', { class: 'muted', text: r.email })));
+      var n = 0;
+      D.sessions.forEach(function (d) {
+        var m = byKey[d + '|' + r.email];
+        if (m) n++;
+        var b = el('button', { class: m ? (m.by === 'instructor' ? 'inst' : 'on') : '', text: '✓', disabled: busy,
+          title: m ? 'Marked ' + isoClock(m.time) + (m.by === 'instructor' ? ' by the instructor' : '') + '. Click to clear.' : 'Click to mark present.',
+          on: { click: function () { run('setMark', [d, r.email, !m], null); } } });
+        tr.appendChild(el('td', { class: 'mark' }, b));
+      });
+      tr.appendChild(el('td', { class: 'total', text: n + ' / ' + D.sessions.length }));
+      t.appendChild(tr);
+    });
+    var tot = el('tr', {}, el('td', { text: 'Present' }));
+    D.sessions.forEach(function (d) { tot.appendChild(el('td', { class: 'mark', text: String(S.roster.filter(function (r) { return has(d, r.email); }).length) })); });
+    tot.appendChild(el('td'));
+    t.appendChild(tot);
+    card.appendChild(el('div', { class: 'scroll' }, t));
+    card.appendChild(el('p', { class: 'muted', style: 'margin-top:10px' },
+      el('span', { class: 'swatch on' }), ' marked by the student during the window; ', el('span', { class: 'swatch inst' }),
+      ' set by you. Click any cell to mark or clear a student. Columns are the scheduled class days from the semester start through today, plus any day with a mark. The grid refreshes every 10 seconds.'));
+  }
+
+  // ---- Settings
+  function settings(card) {
+    var S = D.state, sch = S.schedule;
+    var title = el('input', { type: 'text', value: S.title, size: 40 });
+    var days = DAY_NAMES.map(function (name, i) {
+      var cb = el('input', { type: 'checkbox' }); cb.checked = sch.days.indexOf(i) !== -1;
+      return { i: i, cb: cb, label: el('label', {}, cb, name.slice(0, 3)) };
+    });
+    var open = el('input', { type: 'time', value: sch.open }), close = el('input', { type: 'time', value: sch.close });
+    var start = el('input', { type: 'date', value: sch.start || '' }), end = el('input', { type: 'date', value: sch.end || '' });
+    var skip = el('textarea', { value: S.skip.join('\n'), placeholder: '2026-11-26' });
+    card.appendChild(el('h2', { text: 'Schedule' }));
+    var dayRow = el('div', { class: 'row' }); days.forEach(function (d) { dayRow.appendChild(d.label); });
+    card.appendChild(el('dl', {},
+      el('dt', { text: 'Title' }), el('dd', {}, title),
+      el('dt', { text: 'Class days' }), el('dd', {}, dayRow),
+      el('dt', { text: 'Opens at' }), el('dd', {}, open, ' ', el('span', { class: 'muted', text: 'New York time' })),
+      el('dt', { text: 'Closes at' }), el('dd', {}, close),
+      el('dt', { text: 'First class day' }), el('dd', {}, start, ' ', el('span', { class: 'muted', text: 'optional; the grid starts here' })),
+      el('dt', { text: 'Last class day' }), el('dd', {}, end, ' ', el('span', { class: 'muted', text: 'optional; no windows after it' })),
+      el('dt', { text: 'No class on' }), el('dd', {}, skip, el('div', { class: 'muted', text: 'One date per line, YYYY-MM-DD (holidays, cancelled classes).' }))));
+    card.appendChild(el('div', { class: 'row' }, button('Save', '', function () {
+      run('saveSettings', [{ title: title.value, days: days.filter(function (d) { return d.cb.checked; }).map(function (d) { return d.i; }),
+        open: open.value, close: close.value, start: start.value, end: end.value, skip: skip.value }], 'Settings saved.');
+    })));
+
+    card.appendChild(el('h2', { text: 'One-off windows', style: 'margin-top:18px' }));
+    card.appendChild(el('p', { class: 'muted', text: 'A window on a date outside the weekly schedule (a moved class, or a window you opened with "Open attendance now").' }));
+    if (S.extra.length) {
+      var t = el('table', {}, el('tr', {}, el('th', { text: 'Date' }), el('th', { text: 'Opens' }), el('th', { text: 'Closes' }), el('th', {})));
+      S.extra.forEach(function (x) {
+        t.appendChild(el('tr', {}, el('td', { text: shortDate(x.date) + ' (' + x.date + ')' }), el('td', { text: clock(x.open) }), el('td', { text: clock(x.close) }),
+          el('td', {}, button('Remove', 'danger', function () { run('removeExtra', [x.date], 'Window removed.'); }))));
+      });
+      card.appendChild(t);
+    }
+    var xd = el('input', { type: 'date' }), xo = el('input', { type: 'time', value: sch.open }), xc = el('input', { type: 'time', value: sch.close });
+    card.appendChild(el('div', { class: 'row', style: 'margin-top:8px' }, xd, xo, ' to ', xc,
+      button('Add window', 'plain', function () { run('addExtra', [xd.value, xo.value, xc.value], 'Window added.'); })));
+
+    card.appendChild(el('h2', { text: 'Delete this class', style: 'margin-top:18px' }));
+    var conf = el('input', { type: 'text', placeholder: 'type the class key: ' + cur, size: 30 });
+    card.appendChild(el('div', { class: 'row' }, conf, button('Delete class', 'danger', function () {
+      ask('Delete ' + cur + '?', ['Its roster, settings, and every attendance mark are deleted. This cannot be undone.'], 'Delete class', true).then(function (yes) {
+        if (!yes) return;
+        busy = true;
+        call('deleteClass', [conf.value]).then(function (d) { busy = false; classes = d.classes; setClass(classes.length ? classes[0].key : ''); flash = { ok: 'Class deleted.' }; loadClass(false); }).catch(fail);
+      });
+    })));
+  }
+
+  // ---- Roster
+  function roster(card) {
+    var S = D.state;
+    card.appendChild(el('h2', { text: 'Roster (' + S.roster.length + ')' }));
+    var file = el('input', { type: 'file', accept: '.csv,text/csv' });
+    card.appendChild(el('p', { class: 'muted', text: 'A CSV with a header row naming first name, last name, and email columns (any order; other columns are ignored). Importing replaces the roster; marks of students who are dropped are kept in the database but no longer shown.' }));
+    card.appendChild(el('div', { class: 'row' }, file, button('Import', '', function () {
+      if (!file.files.length) { flash = { err: 'Choose a CSV file first.' }; render(); return; }
+      ask('Replace the roster?', ['The current ' + S.roster.length + ' students are replaced by the file\'s rows.'], 'Import', S.roster.length > 0).then(function (yes) {
+        if (!yes) return;
+        var reader = new FileReader();
+        reader.onload = function () { run('importRoster', [String(reader.result)], 'Roster imported.'); };
+        reader.readAsText(file.files[0]);
+      });
+    })));
+    if (!S.roster.length) return;
+    var t = el('table', {}, el('tr', {}, el('th', { text: 'Last name' }), el('th', { text: 'First name' }), el('th', { text: 'Email' })));
+    S.roster.forEach(function (r) { t.appendChild(el('tr', {}, el('td', { text: r.last }), el('td', { text: r.first }), el('td', { text: r.email }))); });
+    card.appendChild(t);
+  }
+
+  boot();
+</script>
+</body>
+</html>

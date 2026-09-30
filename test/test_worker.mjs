@@ -125,6 +125,41 @@ r = await adm('deleteClass', [KEY]);
 ok(r.ok && !r.data.classes.some(c => c.key === KEY), 'delete class');
 ok(/does not match any class/.test((await adm('get')).error) && (await adm('log', ['', 10])).data.rows.length === 0, 'class and its log are gone');
 
+// attendance tool
+const AK = 'a' + Date.now();
+const att = (action, args = [], key = AK) => post('/att/admin', { token: PROF, class: key, action: action, args: args });
+const attStu = (i, action) => post('/att', { token: token(m(i)), class: AK, action: action });
+ok(/not an instructor/.test((await post('/att/admin', { token: token(m(1)), class: AK, action: 'whoami' })).error), 'attendance admin needs an instructor');
+r = await att('createClass', [AK, 'Attendance test'], '');
+ok(r.ok && r.data.key === AK && (await (await fetch(API + '/att/config')).json()).classes.some(c => c.key === AK), 'attendance class created and listed');
+r = await att('importRoster', ['first,last,email\nF1,L1,' + m(1) + '\nF2,L2,' + m(2)]);
+ok(r.ok && r.data.state.roster.length === 2 && r.data.state.schedule.open === '07:50', 'attendance roster imported, default schedule');
+ok((await attStu(9, 'state')).state.authorized === false, 'account outside the attendance roster is blocked');
+// Closed: no day is scheduled, so the mark is refused.
+await att('saveSettings', [{ title: 'Attendance test', days: [], open: '07:50', close: '08:01', skip: '' }]);
+r = await attStu(1, 'state');
+ok(r.ok && r.state.authorized && r.state.open === null && r.state.next === null, 'closed with nothing scheduled');
+ok(/not open/.test((await attStu(1, 'mark')).error), 'mark refused while closed');
+// Open now for 5 minutes, then the student marks; a second press changes nothing.
+r = await att('openNow', [5]);
+ok(r.ok && r.data.open && r.data.state.extra.length === 1, 'open now adds a window and reports open');
+r = await attStu(1, 'mark');
+ok(r.ok && r.state.marked && r.state.open, 'student marked present');
+const firstMark = r.state.marked;
+r = await attStu(1, 'mark');
+ok(r.ok && r.state.marked === firstMark, 'second press keeps the first time');
+r = await att('get');
+ok(r.data.marks.length === 1 && r.data.marks[0].email === m(1) && r.data.marks[0].by === 'student' && r.data.sessions.indexOf(r.data.today) !== -1, 'instructor sees the mark and today as a session');
+r = await att('setMark', [r.data.today, m(2), true]);
+ok(r.data.marks.length === 2 && r.data.marks.find(x => x.email === m(2)).by === 'instructor', 'instructor marks a student');
+r = await att('setMark', [r.data.today, m(2), false]);
+ok(r.data.marks.length === 1, 'instructor clears a mark');
+r = await att('removeExtra', [r.data.today]);
+ok(r.data.open === null && (await attStu(2, 'state')).state.open === null, 'window removed: closed again');
+ok(/Type the class key/.test((await att('deleteClass', ['wrong'])).error), 'attendance delete needs the key typed');
+r = await att('deleteClass', [AK]);
+ok(r.ok && !r.data.classes.some(c => c.key === AK) && /does not match/.test((await att('get')).error), 'attendance class deleted');
+
 server.close();
 console.log('passed', pass, 'failed', fail);
 process.exit(fail ? 1 : 0);

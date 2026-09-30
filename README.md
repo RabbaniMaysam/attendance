@@ -39,6 +39,10 @@ On the student page, an instructor account sees the whole board and can preview 
 
 One backend serves every class. A class is created on the instructor page with a short key, and its student link is the page address followed by `?c=` and the key. A new class starts from the standard catalog in `worker/src/seed.js` or from a copy of an existing class's catalog and limits.
 
+## Attendance tool
+
+The same backend also serves a separate attendance tool: `docs/attendance.html` for students (link `attendance.html?c=key`) and `docs/attendance_admin.html` for the instructor. An attendance class has its own roster (CSV import, same format), weekly class days with an opening and a closing clock time (New York time; default Tuesday and Thursday, 7:50 to 8:01 am), optional first and last class days, holidays, and one-off windows ("Open attendance now for N minutes"). A student signs in and presses one button while a window is open; the mark is refused outside a window. The instructor page shows a students-by-dates grid (refreshed every 10 seconds), where any cell can be marked or cleared by hand, and downloads the grid as CSV. Rules are in `worker/src/attendance.js`; storage is the `att_classes` and `att_marks` tables.
+
 ## Sign-in
 
 The pages use the "Sign in with Google" button. The Worker verifies Google's signature on each sign-in token and that the token was issued for this tool's client ID. The client ID is a public identifier created once in Google Cloud Console (type "Web application", with the page's origin, for example `https://USERNAME.github.io`, under "Authorized JavaScript origins"). It is the value of `GOOGLE_CLIENT_ID` in `worker/wrangler.toml`. The tool holds no permission on any Google account.
@@ -59,5 +63,6 @@ Then write the Worker's address into `docs/config.js`.
 ## Tests
 
 - `node test/test_rules.mjs` checks the rules on an in-memory class.
+- `node test/test_attendance.mjs` checks the attendance windows (New York time, clock changes, holidays) and settings.
 - `node test/test_worker.mjs` checks a local copy of the Worker end to end, including simultaneous claims of one item (its header lists the commands).
 - `node test/check_pages.mjs` checks that the page scripts parse.

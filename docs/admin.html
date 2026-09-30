@@ -282,7 +282,8 @@
     document.getElementById('signin').hidden = true;
     app.appendChild(el('h1', { text: 'Group sign-up: instructor page' }));
     app.appendChild(el('div', { class: 'muted' }, 'Signed in as ' + me + ' · ',
-      el('button', { class: 'link', text: 'Sign out', on: { click: signOut } })));
+      el('button', { class: 'link', text: 'Sign out', on: { click: signOut } }), ' · ',
+      el('a', { href: 'attendance_admin.html', text: 'Attendance instructor page' })));
     if (flash && flash.err) app.appendChild(el('div', { class: 'banner err', text: flash.err }));
     if (flash && flash.ok) app.appendChild(el('div', { class: 'banner ok', text: flash.ok }));
 

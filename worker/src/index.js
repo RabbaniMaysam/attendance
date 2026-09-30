@@ -5,6 +5,7 @@
  *   GET  /config  -> {clientId, classes}        public, needed before sign-in
  *   POST /        -> student page: {token, class, action, args, viewAs, note}
  *   POST /admin   -> instructor page: {token, class, action, args}
+ *   /att/config, /att, /att/admin -> the attendance tool (see the end of this file)
  *
  * Each class is one row of the classes table holding its state as JSON (see
  * rules.js). A change is written only if the row's version is the one that was
@@ -14,6 +15,7 @@
 
 import { act, view, adminAct, isAdminAction, newClass, upgrade } from './rules.js';
 import { SEED_DATASETS, SEED_TOPICS } from './seed.js';
+import * as att from './attendance.js';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -39,17 +41,24 @@ export default {
         const row = await env.DB.prepare('SELECT version FROM classes WHERE key = ?').bind(key).first();
         return json({ version: row ? row.version : -1 });
       }
-      if (request.method === 'POST' && (path === '/' || path === '/admin')) {
+      if (request.method === 'GET' && path === '/att/config') {
+        return json({ clientId: env.GOOGLE_CLIENT_ID || '', classes: await attClassList(env) });
+      }
+      if (request.method === 'POST' && (path === '/' || path === '/admin' || path === '/att' || path === '/att/admin')) {
         const body = await request.text();
         if (body.length > 1000000) throw new Error('The request is too large.');
         const req = JSON.parse(body);
         const real = await verify(req.token, env);
         const admin = isAdmin(real, env);
         const args = Array.isArray(req.args) ? req.args.slice(0, 8) : [];
-        if (path === '/admin') {
+        const key = String(req.class || '');
+        const action = String(req.action);
+        if (path === '/admin' || path === '/att/admin') {
           if (!admin) throw new Error('The account ' + real + ' is not an instructor account.');
-          return json({ ok: true, data: await adminCall(env, real, String(req.action), String(req.class || ''), args) });
+          const data = path === '/admin' ? await adminCall(env, real, action, key, args) : await attAdminCall(env, real, action, key, args);
+          return json({ ok: true, data: data });
         }
+        if (path === '/att') return json({ ok: true, state: await attStudentCall(env, real, action, key) });
         return json({ ok: true, state: await studentCall(env, real, admin, req, args) });
       }
       return json({ ok: false, error: 'Not found.' });
@@ -264,4 +273,93 @@ async function adminCall(env, real, action, key, args) {
   if (!isAdminAction(action)) throw new Error('Unknown action.');
   return await mutate(env, key, who, action, action === 'importRoster' ? ['(file)'] : args,
     s => adminAct(s, real, action, args, Date.now()));
+}
+
+// ---------------------------------------------------------------- attendance tool
+//
+//   GET  /att/config          -> {clientId, classes}
+//   POST /att        {token, class, action: 'state' | 'mark'}   -> {ok, state}
+//   POST /att/admin  {token, class, action, args}               -> {ok, data}
+// Settings and roster are one JSON row per class (att_classes); marks are rows of att_marks.
+
+async function attClassList(env) {
+  const out = await env.DB.prepare("SELECT key, json_extract(state, '$.title') AS title FROM att_classes ORDER BY key").all();
+  return out.results;
+}
+
+async function readAtt(env, key) {
+  const row = await env.DB.prepare('SELECT state FROM att_classes WHERE key = ?').bind(key).first();
+  if (!row) throw new Error('This link does not match any class.');
+  return att.upgradeAtt(JSON.parse(row.state));
+}
+
+function writeAtt(env, key, s) {
+  return env.DB.prepare('UPDATE att_classes SET state = ? WHERE key = ?').bind(JSON.stringify(s), key).run();
+}
+
+async function attStudentCall(env, real, action, key) {
+  const s = await readAtt(env, key);
+  const now = Date.now();
+  const date = att.nyParts(now).date;
+  if (action === 'mark') {
+    if (!att.student(s, real)) throw new Error('This account is not on the class roster.');
+    const open = att.windowAt(s, now);
+    if (!open) throw new Error('Attendance is not open right now.');
+    await env.DB.prepare('INSERT OR IGNORE INTO att_marks (class, date, email, time, by) VALUES (?, ?, ?, ?, ?)')
+      .bind(key, date, real, new Date(now).toISOString(), 'student').run();
+  } else if (action !== 'state') throw new Error('Unknown action.');
+  const mark = await env.DB.prepare('SELECT time FROM att_marks WHERE class = ? AND date = ? AND email = ?').bind(key, date, real).first();
+  return att.studentView(s, real, mark, now);
+}
+
+async function attAdminCall(env, real, action, key, args) {
+  const now = Date.now();
+  if (action === 'whoami') return { email: real, classes: await attClassList(env) };
+
+  if (action === 'createClass') {
+    const newKey = String(args[0] || '').trim().toLowerCase();
+    const title = String(args[1] || '').trim();
+    if (!/^[a-z0-9-]{2,30}$/.test(newKey)) throw new Error('The class key must be 2 to 30 lowercase letters, digits, or hyphens.');
+    if (!title) throw new Error('The class needs a title.');
+    const res = await env.DB.prepare('INSERT OR IGNORE INTO att_classes (key, state) VALUES (?, ?)')
+      .bind(newKey, JSON.stringify(att.newAttClass(title, now))).run();
+    if (res.meta.changes !== 1) throw new Error('A class with the key "' + newKey + '" exists.');
+    return { key: newKey, classes: await attClassList(env) };
+  }
+
+  if (action === 'deleteClass') {
+    if (String(args[0]) !== key) throw new Error('Type the class key exactly to delete the class.');
+    await readAtt(env, key);
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM att_classes WHERE key = ?').bind(key),
+      env.DB.prepare('DELETE FROM att_marks WHERE class = ?').bind(key)
+    ]);
+    return { classes: await attClassList(env) };
+  }
+
+  const s = await readAtt(env, key);
+
+  if (action === 'setMark') {
+    // Instructor override: present (true) or absent (false) for one student on one date.
+    const date = String(args[0] || ''), email = String(args[1] || '').trim().toLowerCase();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !email) throw new Error('A date and an email are needed.');
+    if (args[2]) {
+      await env.DB.prepare('INSERT OR REPLACE INTO att_marks (class, date, email, time, by) VALUES (?, ?, ?, ?, ?)')
+        .bind(key, date, email, new Date(now).toISOString(), 'instructor').run();
+    } else {
+      await env.DB.prepare('DELETE FROM att_marks WHERE class = ? AND date = ? AND email = ?').bind(key, date, email).run();
+    }
+  } else if (action === 'openNow') {
+    const w = att.openNowWindow(now, args[0]);
+    att.ADMIN.addExtra(s, w.date, w.open, w.close);
+    await writeAtt(env, key, s);
+  } else if (Object.prototype.hasOwnProperty.call(att.ADMIN, action)) {
+    att.ADMIN[action](s, ...args);
+    await writeAtt(env, key, s);
+  } else if (action !== 'get') throw new Error('Unknown action.');
+
+  const marks = (await env.DB.prepare('SELECT date, email, time, by FROM att_marks WHERE class = ? ORDER BY date, email').bind(key).all()).results;
+  const dates = marks.map(m => m.date).filter((d, i, a) => a.indexOf(d) === i);
+  return { state: s, marks: marks, sessions: att.sessionDates(s, dates, now), today: att.nyParts(now).date,
+           open: att.windowAt(s, now), next: att.nextWindow(s, now) };
 }

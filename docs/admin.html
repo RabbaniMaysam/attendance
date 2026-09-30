@@ -256,8 +256,17 @@
 
   /** Who set a group's current claim: 'group', 'instructor', or '' when none. Old groups without the field count as the group's. */
   function claimBy(g, field) { return g[field] === '' ? '' : (g[field + 'By'] === 'instructor' ? 'instructor' : 'group'); }
-  function claimClass(g, field) { return { group: 'byGroup', instructor: 'forced' }[claimBy(g, field)] || ''; }
   function claimOrigin(g, field) { return claimBy(g, field) === 'instructor' ? 'set by you on this page' : 'chosen by the group'; }
+  /** The code the group itself chose last, even when you overrode it. */
+  function groupChoice(g, field) {
+    var own = g['group' + field.charAt(0).toUpperCase() + field.slice(1)];
+    return own !== undefined ? own : (claimBy(g, field) === 'group' ? g[field] : '');
+  }
+  /** Color of one option in a claim dropdown: green for the group's own choice, yellow for your override. */
+  function optionClass(g, field, code) {
+    if (code === groupChoice(g, field)) return 'byGroup';
+    return code === g[field] && claimBy(g, field) === 'instructor' ? 'forced' : '';
+  }
 
   // ---------------------------------------------------------------- rendering
 
@@ -419,10 +428,10 @@
       var held = function (field, code) { return C.groups.some(function (x) { return x !== g && x[field] === code; }); };
       var d = C.datasets.filter(function (x) { return x.code === g.dataset; })[0];
       var dOpts = [['', 'None']].concat(C.datasets.map(function (x) {
-        return [x.code, x.code + '. ' + x.name.slice(0, 50), !x.own && held('dataset', x.code), x.code === g.dataset ? claimClass(g, 'dataset') : ''];
+        return [x.code, x.code + '. ' + x.name.slice(0, 50), !x.own && held('dataset', x.code), optionClass(g, 'dataset', x.code)];
       }));
       var tOpts = [['', 'None']].concat(C.topics.map(function (x) {
-        return [x.code, x.code + '. ' + x.topic.slice(0, 50), held('topic', x.code), x.code === g.topic ? claimClass(g, 'topic') : ''];
+        return [x.code, x.code + '. ' + x.topic.slice(0, 50), held('topic', x.code), optionClass(g, 'topic', x.code)];
       }));
       var lead = ms.filter(function (r) { return r.email === g.leader; })[0];
       var leadName = lead ? fullName(lead) : g.leader;
@@ -443,7 +452,7 @@
           if (link === null) { render(); return; }
           run('setClaim', [g.name, 'dataset', v, link], 'Dataset changed for ' + g.name + '.');
         });
-      }, claimClass(g, 'dataset')));
+      }));
       if (d && d.own) dCell.appendChild(el('div', { class: 'muted', text: g.ownLink || 'No link' }));
       t.appendChild(el('tr', {}, el('td', {}, el('b', { text: g.name }), el('div', { class: 'muted', text: 'created ' + when(g.createdAt) })),
         el('td', { text: ms.map(fullName).join(', ') }),
@@ -462,7 +471,7 @@
           forceClaim('topic', C.topics, function (x) { return x.topic; }, v, function () {
             run('setClaim', [g.name, 'topic', v], 'Topic changed for ' + g.name + '.');
           });
-        }, claimClass(g, 'topic'))),
+        })),
         el('td', {}, button('Delete', 'danger', function () {
           ask('Delete ' + g.name + '?', ['Its ' + ms.length + ' member(s) stay on the roster without a group. Its dataset and topic are released.'],
             'Delete group', true).then(function (yes) { if (yes) run('deleteGroup', [g.name], g.name + ' deleted.'); });
@@ -470,8 +479,8 @@
     });
     if (C.groups.length) card.appendChild(t);
     card.appendChild(el('p', { class: 'muted', style: 'margin-top:10px' },
-      el('span', { class: 'swatch byGroup' }), ' chosen by the group   ', el('span', { class: 'swatch forced' }), ' set by you on this page. ',
-      'Groups normally choose for themselves; a change here overrides their choice after a confirmation. ',
+      'In the dropdowns, ', el('span', { class: 'swatch byGroup' }), ' marks the group\'s own choice and ', el('span', { class: 'swatch forced' }),
+      ' marks an item you set here in its place; both stay marked until the group chooses again. ',
       'To move a student between groups, use the Roster tab. An item claimed by another group is greyed out: release it there first.'));
   }
 

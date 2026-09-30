@@ -40,6 +40,9 @@
     .tag { font-size: 13px; font-weight: 600; }
     .tag.free { color: var(--ok); }
     .tag.yours { color: var(--accent); }
+    .tag.todo { color: #8a5a00; }
+    .group .line { font-size: 13px; margin-top: 3px; }
+    .group .line span { color: var(--muted); }
     button { font: inherit; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--accent);
              background: var(--accent); color: #fff; cursor: pointer; }
     button.plain { background: #fff; color: var(--accent); }
@@ -74,6 +77,7 @@
   var TOKEN_KEY = 'signup_token';
   var conf = null, token = '', S = null, note = '';
   var busy = false, flash = null, asking = false, ownLink = '', viewAs = '';
+  var page = 'home';  // 'home', 'datasets', or 'topics'
   try { token = sessionStorage.getItem(TOKEN_KEY) || ''; } catch (e) {}
 
   // ---------------------------------------------------------------- plumbing
@@ -120,9 +124,10 @@
       });
   }
 
-  function send(action, args, okText) {
+  /** Sends one action; on success, then() runs before the page is redrawn (used to return to the group page). */
+  function send(action, args, okText, then) {
     busy = true; flash = null; render();
-    api(action, args).then(function (s) { busy = false; S = s; flash = { ok: okText }; render(); })
+    api(action, args).then(function (s) { busy = false; S = s; if (then) then(); flash = { ok: okText }; render(); })
       .catch(function (e) {
         busy = false;
         if (e.message === 'SIGNIN') return;
@@ -151,7 +156,7 @@
   }
 
   function signOut() {
-    setToken(''); S = null; viewAs = '';
+    setToken(''); S = null; viewAs = ''; page = 'home';
     whenGoogleReady(function () { google.accounts.id.disableAutoSelect(); });
     showSignIn();
   }
@@ -267,7 +272,7 @@
       ' · ', signOutLink));
     if (S.admin && S.roster) {
       var pick = el('select', { on: { change: function (ev) {
-        viewAs = ev.target.value; ownLink = ''; flash = null; load(false);
+        viewAs = ev.target.value; ownLink = ''; flash = null; page = 'home'; load(false);
       } } }, el('option', { value: '', text: 'My own account' }));
       S.roster.forEach(function (r) {
         pick.appendChild(el('option', { value: r.email, text: r.name + ' (' + r.email + ')', selected: r.email === viewAs }));
@@ -282,8 +287,14 @@
     if (flash && flash.err) app.appendChild(el('div', { class: 'banner err', text: flash.err }));
     if (flash && flash.ok) app.appendChild(el('div', { class: 'banner ok', text: flash.ok }));
 
+    var open = function (p) { return function () { page = p; flash = null; window.scrollTo(0, 0); render(); }; };
+    if (page !== 'home') {
+      app.appendChild(el('p', { style: 'margin-top:14px' },
+        el('button', { class: 'plain', text: '← Back', on: { click: open('home') } })));
+    }
+
     // ---- my group
-    if (me) {
+    if (page === 'home' && me) {
       var card = el('div', { class: 'card' }, el('h2', { text: 'Your group' }));
       if (!my) {
         if (me.request) {
@@ -304,27 +315,39 @@
               me.request ? 'Your request to join ' + me.request + ' will be cancelled.' : null].filter(Boolean) },
             function () { send('createGroup', [], 'Your group was created. You are its leader.'); }, false));
         }
+        card.appendChild(el('p', { class: 'muted', style: 'margin-top:12px' }, 'Browse the ',
+          el('button', { class: 'link', text: 'datasets', on: { click: open('datasets') } }), ' and the ',
+          el('button', { class: 'link', text: 'presentation topics', on: { click: open('topics') } }),
+          '. A group claims one of each once it has ' + S.minToClaim + ' members.'));
       } else {
         var d = my.dataset !== '' ? byCode(S.datasets, my.dataset) : null;
         var t = my.topic !== '' ? byCode(S.topics, my.topic) : null;
-        card.appendChild(el('dl', {},
-          el('dt', { text: 'Group' }), el('dd', { text: my.name }),
-          el('dt', { text: 'Leader' }), el('dd', { text: my.leader + (me.leader ? ' (you)' : '') }),
-          el('dt', { text: 'Dataset' }), el('dd', { text: d ? d.name + (my.ownLink ? ' (' + my.ownLink + ')' : '') : 'Not claimed yet' }),
-          el('dt', { text: 'Topic' }), el('dd', { text: t ? t.topic : 'Not claimed yet' })));
-
-        card.appendChild(el('h3', { text: 'Members' }));
-        var ml = el('ul', { class: 'plain' });
-        my.members.forEach(function (m) {
-          var li = el('li', {}, el('span', { text: m.name }));
+        var members = el('span');
+        my.members.forEach(function (m, i) {
+          if (i) members.appendChild(document.createTextNode(', '));
+          members.appendChild(document.createTextNode(m.name + (m.name === my.leader ? ' (leader)' : '')));
           if (canAct && me.leader && m.email && m.email !== S.email) {
-            li.appendChild(actionButton('Remove',
+            members.appendChild(document.createTextNode(' '));
+            members.appendChild(actionButton('remove',
               { title: 'Remove ' + m.name + ' from your group?', lines: [m.name + ' will be without a group and can ask to join again.'], danger: true },
               function () { send('removeMember', [m.email], m.name + ' was removed.'); }, true));
           }
-          ml.appendChild(li);
         });
-        card.appendChild(ml);
+        // One row per task: what is claimed, and the button that opens the list.
+        var taskRow = function (have, label, p, by) {
+          var dd = el('dd', {});
+          dd.appendChild(el('span', { class: have ? '' : 'tag todo', text: have ? label : 'Not claimed yet' }));
+          if (have && by === 'instructor') dd.appendChild(el('span', { class: 'muted', text: ' (set by the instructor)' }));
+          dd.appendChild(document.createTextNode(' '));
+          if (canClaim) dd.appendChild(el('button', { class: have ? 'plain' : '', text: have ? 'Change' : 'Choose', on: { click: open(p) } }));
+          else dd.appendChild(el('button', { class: 'link', text: 'view list', on: { click: open(p) } }));
+          return dd;
+        };
+        card.appendChild(el('dl', {},
+          el('dt', { text: 'Group' }), el('dd', { text: my.name }),
+          el('dt', { text: 'Members' }), el('dd', {}, members),
+          el('dt', { text: 'Dataset' }), taskRow(!!d, d ? d.name + (my.ownLink ? ' (' + my.ownLink + ')' : '') : '', 'datasets', my.datasetBy),
+          el('dt', { text: 'Topic' }), taskRow(!!t, t ? t.topic : '', 'topics', my.topicBy)));
 
         if (me.leader) {
           card.appendChild(el('h3', { text: 'Requests to join' }));
@@ -363,15 +386,19 @@
     }
 
     // ---- all groups
+    if (page === 'home') {
     var gcard = el('div', { class: 'card' }, el('h2', { text: 'Groups' }));
     if (!S.groups.length) gcard.appendChild(el('p', { class: 'muted', text: 'No group exists yet.' }));
     var grid = el('div', { class: 'grid' });
     S.groups.forEach(function (g) {
       var mine = my && g.name === my.name;
-      var box = el('div', { class: 'group' + (mine ? ' mine' : '') }, el('b', { text: g.name }));
-      var ul = el('ul');
-      g.members.forEach(function (m) { ul.appendChild(el('li', { text: m.name + (m.name === g.leader ? ' (leader)' : '') })); });
-      box.appendChild(ul);
+      var gd = g.dataset !== '' ? byCode(S.datasets, g.dataset) : null;
+      var gt = g.topic !== '' ? byCode(S.topics, g.topic) : null;
+      var box = el('div', { class: 'group' + (mine ? ' mine' : '') }, el('b', { text: g.name }),
+        el('div', { class: 'line' }, el('span', { text: 'Members: ' }),
+          g.members.map(function (m) { return m.name + (m.name === g.leader ? ' (leader)' : ''); }).join(', ')),
+        el('div', { class: 'line' }, el('span', { text: 'Dataset: ' }), gd ? gd.name : '—'),
+        el('div', { class: 'line', style: 'margin-bottom:6px' }, el('span', { text: 'Topic: ' }), gt ? gt.topic : '—'));
       if (mine) box.appendChild(el('span', { class: 'tag yours', text: 'Your group' }));
       else if (g.full) box.appendChild(el('span', { class: 'muted', text: 'Full' }));
       else if (me && me.request === g.name) box.appendChild(el('span', { class: 'muted', text: 'Request sent' }));
@@ -386,9 +413,13 @@
     });
     gcard.appendChild(grid);
     app.appendChild(gcard);
+    }
 
     // ---- datasets
+    if (page === 'datasets') {
     var dcard = el('div', { class: 'card' }, el('h2', { text: 'Datasets' }));
+    if (canClaim) dcard.appendChild(el('p', { class: 'muted', text: my.dataset === '' ? 'Claim one dataset for your group.' : 'Your group holds the highlighted dataset. Switching releases it.' }));
+    else if (my) dcard.appendChild(el('p', { class: 'muted', text: me.leader ? 'Your group needs ' + S.minToClaim + ' members before you can claim.' : 'Only your group leader can claim.' }));
     var dt = el('table', {}, el('tr', {}, el('th', { text: 'Dataset' }), el('th', { text: 'Status' }), el('th', {})));
     S.datasets.forEach(function (d) {
       var mine = my && my.dataset === d.code;
@@ -423,7 +454,7 @@
         var btn = actionButton(mine ? 'Update link' : (replacing ? 'Switch' : 'Claim'), null, function () {
           var c = spec();
           ask(c.title, c.lines, c.ok, !!c.danger).then(function (yes) {
-            if (yes) send('claimDataset', [d.code, input ? input.value : ''], 'Dataset saved: ' + d.name + '.');
+            if (yes) send('claimDataset', [d.code, input ? input.value : ''], 'Dataset saved: ' + d.name + '.', open('home'));
           });
         }, replacing || mine);
         act.appendChild(btn);
@@ -432,9 +463,13 @@
     });
     dcard.appendChild(dt);
     app.appendChild(dcard);
+    }
 
     // ---- topics
+    if (page === 'topics') {
     var tcard = el('div', { class: 'card' }, el('h2', { text: 'Presentation topics' }));
+    if (canClaim) tcard.appendChild(el('p', { class: 'muted', text: my.topic === '' ? 'Claim one topic for your group.' : 'Your group holds the highlighted topic. Switching releases it.' }));
+    else if (my) tcard.appendChild(el('p', { class: 'muted', text: me.leader ? 'Your group needs ' + S.minToClaim + ' members before you can claim.' : 'Only your group leader can claim.' }));
     var tt = el('table', {}, el('tr', {}, el('th', { text: 'Topic' }), el('th', { text: 'Status' }), el('th', {})));
     S.topics.forEach(function (t) {
       var mine = my && my.topic === t.code;
@@ -451,7 +486,7 @@
               'Your group currently holds "' + (current ? current.topic : my.topic) + '". Switching releases it, and another group may claim it right away.'] }
             : { title: 'Claim "' + t.topic + '" for your group?', ok: 'Claim topic', lines: [
               'Only one group can hold this topic. You can switch until the deadline.'] },
-          function () { send('claimTopic', [t.code], 'Topic saved: ' + t.topic + '.'); }, replacing));
+          function () { send('claimTopic', [t.code], 'Topic saved: ' + t.topic + '.', open('home')); }, replacing));
       }
       tt.appendChild(el('tr', { class: mine ? 'mine' : '' },
         el('td', {}, el('div', { text: t.topic }), el('div', { class: 'desc', text: t.description })),
@@ -459,17 +494,25 @@
     });
     tcard.appendChild(tt);
     app.appendChild(tcard);
+    }
 
     window.scrollTo(0, keepScroll);
   }
 
   boot();
-  // Refresh every 20 seconds unless the student is typing, confirming, or choosing from a list.
-  setInterval(function () {
+  // Live updates: every 3 seconds the page asks the server for the class's change counter (a
+  // cheap call) and reloads the state only when somebody changed something. Paused while the
+  // tab is hidden or the student is typing, choosing from a list, or answering a pop-up.
+  function poll() {
     var a = document.activeElement;
     var editing = a && (a.tagName === 'INPUT' || a.tagName === 'SELECT');
-    if (S && !busy && !asking && !editing && !document.hidden) load(true);
-  }, 20000);
+    if (!S || !S.authorized || busy || asking || editing || document.hidden) return;
+    fetch(API + '/version?c=' + encodeURIComponent(classKey)).then(function (r) { return r.json(); })
+      .then(function (o) { if (S && !busy && !asking && o.version !== S.version) load(true); })
+      .catch(function () {});
+  }
+  setInterval(poll, 3000);
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) poll(); });
 </script>
 </body>
 </html>

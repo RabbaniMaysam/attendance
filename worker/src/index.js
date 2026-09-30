@@ -33,6 +33,12 @@ export default {
       if (request.method === 'GET' && path === '/config') {
         return json({ clientId: env.GOOGLE_CLIENT_ID || '', classes: await classList(env) });
       }
+      // The pages poll this cheap call and reload the state only when the number changed.
+      if (request.method === 'GET' && path === '/version') {
+        const key = new URL(request.url).searchParams.get('c') || '';
+        const row = await env.DB.prepare('SELECT version FROM classes WHERE key = ?').bind(key).first();
+        return json({ version: row ? row.version : -1 });
+      }
       if (request.method === 'POST' && (path === '/' || path === '/admin')) {
         const body = await request.text();
         if (body.length > 1000000) throw new Error('The request is too large.');
@@ -154,7 +160,7 @@ async function mutate(env, key, who, action, args, fn) {
     ].concat(logs.map(l =>
       env.DB.prepare(LOG_SQL + 'SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM classes WHERE key = ? AND stamp = ?)')
         .bind(time, key, l.actor, l.action, String(l.detail).slice(0, 2000), key, stamp))));
-    if (res[0].meta.changes === 1) return row.state;
+    if (res[0].meta.changes === 1) return { state: row.state, version: row.version + 1 };
   }
   throw new Error('The page is busy. Try again in a few seconds.');
 }
@@ -166,16 +172,19 @@ async function studentCall(env, real, admin, req, args) {
   const viewAs = String(req.viewAs || '').trim().toLowerCase();
   const action = String(req.action);
   if (action === 'state') {
-    const state = (await readClass(env, key)).state;
-    const v = view(state, real, viewAs, admin, Date.now());
+    const row = await readClass(env, key);
+    const v = view(row.state, real, viewAs, admin, Date.now());
     if (req.note === 'sign in' || req.note === 'open page') {
       await logNow(env, key, real, req.note, v.authorized ? (v.me || viewAs ? '' : 'instructor') : 'not on the class roster');
     }
+    v.version = row.version;
     return v;
   }
   const who = real + (admin && viewAs ? ' (as ' + viewAs + ')' : '');
-  const state = await mutate(env, key, who, action, args, s => act(s, real, action, args, viewAs, admin, Date.now()));
-  return view(state, real, viewAs, admin, Date.now());
+  const row = await mutate(env, key, who, action, args, s => act(s, real, action, args, viewAs, admin, Date.now()));
+  const v = view(row.state, real, viewAs, admin, Date.now());
+  v.version = row.version;
+  return v;
 }
 
 // ---------------------------------------------------------------- instructor page
@@ -213,7 +222,7 @@ async function adminCall(env, real, action, key, args) {
     return { classes: await classList(env) };
   }
 
-  if (action === 'get') return { state: (await readClass(env, key)).state };
+  if (action === 'get') return await readClass(env, key);
 
   if (action === 'log') {
     const like = '%' + String(args[0] || '').replace(/[%_]/g, '') + '%';
@@ -225,7 +234,6 @@ async function adminCall(env, real, action, key, args) {
   }
 
   if (!isAdminAction(action)) throw new Error('Unknown action.');
-  const state = await mutate(env, key, who, action, action === 'importRoster' ? ['(file)'] : args,
+  return await mutate(env, key, who, action, action === 'importRoster' ? ['(file)'] : args,
     s => adminAct(s, real, action, args, Date.now()));
-  return { state: state };
 }

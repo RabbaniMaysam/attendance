@@ -131,10 +131,12 @@ ok(s.groups.find(g => g.name === 'Group 1').members[0].email === '', 'other grou
 
 // instructor actions: Group 1 = a (leader), request from b pending; Group 2 = c (leader), d; request from e pending
 throws(() => adm('setClaim', 'Group 1', 'topic', '7'), /claimed by Group 2/, 'instructor cannot double-assign a topic');
+const g1Before = grp('Group 1').topic;
 adm('setClaim', 'Group 1', 'topic', '9');
 adm('setClaim', 'Group 2', 'dataset', '');
 ok(grp('Group 1').topic === '9' && grp('Group 2').dataset === '', 'instructor assigns and releases claims');
 ok(grp('Group 2').topicBy === 'group' && grp('Group 1').topicBy === 'instructor' && grp('Group 2').datasetBy === '', 'claims record who set them');
+ok(grp('Group 2').groupTopic === '7' && grp('Group 1').groupTopic === g1Before && grp('Group 1').topic === '9', 'the group\'s own choice survives an instructor override');
 const nLogs = logs.length;
 adm('setClaim', 'Group 1', 'topic', '9');
 ok(logs.length === nLogs, 'unchanged instructor claim is not logged');

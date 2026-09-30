@@ -6,8 +6,9 @@
  * State of a class:
  *   settings {title, deadline (ISO text or ''), maxSize, minToClaim, maxGroups}
  *   roster   [{first, last, email, group, joinedAt}]
- *   groups   [{name, leader, createdAt, dataset, ownLink, datasetAt, datasetBy, topic, topicAt, topicBy}]
- *            datasetBy/topicBy: 'group' when the leader claimed it, 'instructor' when set on the instructor page
+ *   groups   [{name, leader, createdAt, dataset, ownLink, datasetAt, datasetBy, groupDataset, topic, topicAt, topicBy, groupTopic}]
+ *            datasetBy/topicBy: 'group' when the leader claimed it, 'instructor' when set on the instructor page.
+ *            groupDataset/groupTopic: the code the group itself claimed last, kept when the instructor overrides it.
  *   requests [{time, email, group, status, decidedAt}]
  *   datasets [{code, name, link, own, reserved}]
  *   topics   [{code, topic, description}]
@@ -62,7 +63,8 @@ function newGroup(s, leader, now) {
   let n = 1;
   while (group(s, 'Group ' + n)) n++;
   const name = 'Group ' + n;
-  s.groups.push({ name: name, leader: leader.email, createdAt: now, dataset: '', ownLink: '', datasetAt: '', datasetBy: '', topic: '', topicAt: '', topicBy: '' });
+  s.groups.push({ name: name, leader: leader.email, createdAt: now, dataset: '', ownLink: '', datasetAt: '', datasetBy: '', groupDataset: '',
+                 topic: '', topicAt: '', topicBy: '', groupTopic: '' });
   setMember(leader, name, now);
   return name;
 }
@@ -183,7 +185,7 @@ const ACTIONS = {
       const holder = c.s.groups.find(x => x.dataset === d.code && x !== g);
       if (holder) throw new Error('"' + d.name + '" was just claimed by ' + holder.name + '. Choose another dataset.');
     }
-    g.dataset = d.code; g.ownLink = link; g.datasetAt = c.now; g.datasetBy = 'group';
+    g.dataset = d.code; g.ownLink = link; g.datasetAt = c.now; g.datasetBy = 'group'; g.groupDataset = d.code;
     c.log('claim dataset', g.name + ': ' + d.code + ' ' + d.name + (link ? ' ' + link : ''));
   },
 
@@ -193,7 +195,7 @@ const ACTIONS = {
     if (!t) throw new Error('That topic does not exist.');
     const holder = c.s.groups.find(x => x.topic === t.code && x !== g);
     if (holder) throw new Error('"' + t.topic + '" was just claimed by ' + holder.name + '. Choose another topic.');
-    g.topic = t.code; g.topicAt = c.now; g.topicBy = 'group';
+    g.topic = t.code; g.topicAt = c.now; g.topicBy = 'group'; g.groupTopic = t.code;
     c.log('claim topic', g.name + ': ' + t.code + ' ' + t.topic);
   }
 };
@@ -266,7 +268,9 @@ export function view(s, real, viewAs, admin, nowMs) {
         full: ms.length >= maxSize,
         dataset: g.dataset,
         ownLink: g.ownLink,
-        topic: g.topic
+        datasetBy: g.datasetBy || '',
+        topic: g.topic,
+        topicBy: g.topicBy || ''
       };
     }),
     datasets: s.datasets.map(d => ({

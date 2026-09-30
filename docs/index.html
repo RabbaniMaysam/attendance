@@ -62,13 +62,10 @@
 </main>
 <script>
   // The class is chosen by the link (?c=key). A site with one class needs no key.
-  var CLASSES = window.SIGNUP_CLASSES || [];
+  var API = (window.SIGNUP_API || '').replace(/\/+$/, '');
   var classKey = new URLSearchParams(location.search).get('c') || '';
-  var chosen = CLASSES.filter(function (c) { return c.key === classKey; })[0] ||
-               (!classKey && CLASSES.length === 1 ? CLASSES[0] : null);
-  var API = chosen ? chosen.api : '';
   var TOKEN_KEY = 'signup_token';
-  var conf = null, token = '', S = null;
+  var conf = null, token = '', S = null, note = '';
   var busy = false, flash = null, armed = null, ownLink = '', viewAs = '';
   try { token = sessionStorage.getItem(TOKEN_KEY) || ''; } catch (e) {}
 
@@ -96,7 +93,9 @@
 
   /** Calls the backend. The body is sent as plain text so the browser makes no preflight request. */
   function api(action, args) {
-    return fetch(API, { method: 'POST', body: JSON.stringify({ token: token, action: action, args: args || [], viewAs: viewAs }) })
+    var body = { token: token, class: classKey, action: action, args: args || [], viewAs: viewAs, note: note };
+    note = '';
+    return fetch(API + '/', { method: 'POST', body: JSON.stringify(body) })
       .then(function (r) { return r.json(); })
       .then(function (out) {
         if (out.ok) return out.state;
@@ -152,25 +151,29 @@
 
   function boot() {
     var app = document.getElementById('app');
-    if (!API) {
-      app.innerHTML = '';
-      app.appendChild(el('h1', { text: 'Group sign-up' }));
-      if (classKey) app.appendChild(el('div', { class: 'banner err', text: 'This link does not match any class. Check the link your instructor posted.' }));
-      else if (!CLASSES.length) app.appendChild(el('div', { class: 'banner err', text: 'No class is configured yet.' }));
-      else app.appendChild(el('p', { text: 'Choose your class:' }));
-      var list = el('ul');
-      if (!classKey) CLASSES.forEach(function (c) {
-        list.appendChild(el('li', {}, el('a', { href: '?c=' + encodeURIComponent(c.key), text: c.name || c.key })));
-      });
-      app.appendChild(list);
-      return;
-    }
-    fetch(API).then(function (r) { return r.json(); }).then(function (c) {
+    fetch(API + '/config').then(function (r) { return r.json(); }).then(function (c) {
       conf = c;
+      var chosen = c.classes.filter(function (x) { return x.key === classKey; })[0] ||
+                   (!classKey && c.classes.length === 1 ? c.classes[0] : null);
+      if (!chosen) {
+        app.innerHTML = '';
+        app.appendChild(el('h1', { text: 'Group sign-up' }));
+        if (classKey) app.appendChild(el('div', { class: 'banner err', text: 'This link does not match any class. Check the link your instructor posted.' }));
+        else if (!c.classes.length) app.appendChild(el('div', { class: 'banner err', text: 'No class is configured yet.' }));
+        else app.appendChild(el('p', { text: 'Choose your class:' }));
+        var list = el('ul');
+        if (!classKey) c.classes.forEach(function (x) {
+          list.appendChild(el('li', {}, el('a', { href: '?c=' + encodeURIComponent(x.key), text: x.title || x.key })));
+        });
+        app.appendChild(list);
+        return;
+      }
+      classKey = chosen.key;
+      conf.title = chosen.title;
       document.title = conf.title;
       if (!conf.clientId) {
         app.innerHTML = '';
-        app.appendChild(el('div', { class: 'banner err', text: 'Sign-in is not configured yet (the Settings sheet has no Google client ID).' }));
+        app.appendChild(el('div', { class: 'banner err', text: 'Sign-in is not configured yet.' }));
         return;
       }
       whenGoogleReady(function () {
@@ -179,11 +182,11 @@
           callback: function (resp) {
             setToken(resp.credential);
             document.getElementById('signin').hidden = true;
-            flash = null; load(false);
+            flash = null; note = 'sign in'; load(false);
           }
         });
       });
-      if (token) load(false); else showSignIn();
+      if (token) { note = 'open page'; load(false); } else showSignIn();
     }).catch(function () {
       app.innerHTML = '';
       app.appendChild(el('div', { class: 'banner err', text: 'The sign-up service did not respond. Reload the page in a minute.' }));

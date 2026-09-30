@@ -8,6 +8,10 @@
 .clasp*.json
 classes/
 
+# Local Worker state and local secrets
+.wrangler/
+.dev.vars
+
 node_modules/
 ~$*
 Thumbs.db

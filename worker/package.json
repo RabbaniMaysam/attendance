@@ -1,0 +1,5 @@
+{
+  "name": "group-signup-worker",
+  "private": true,
+  "type": "module"
+}

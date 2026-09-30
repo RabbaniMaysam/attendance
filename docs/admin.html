@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Group sign-up: instructor page</title>
+  <script src="https://accounts.google.com/gsi/client" async></script>
+  <script src="config.js"></script>
+  <style>
+    :root { --ink: #1f2328; --muted: #5c6670; --line: #d8dde3; --bg: #f6f7f9; --card: #fff;
+            --accent: #0b5cad; --ok: #1a7f37; --warn: #b3261e; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink);
+           font: 14px/1.45 -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
+    main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 60px; }
+    h1 { font-size: 22px; margin: 0 0 4px; }
+    h2 { font-size: 17px; margin: 0 0 10px; }
+    p { margin: 0 0 10px; }
+    .muted { color: var(--muted); }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-top: 14px; }
+    .banner { padding: 9px 14px; border-radius: 8px; margin-top: 12px; }
+    .banner.err { background: #fdecea; color: var(--warn); border: 1px solid #f3c1bc; }
+    .banner.ok { background: #e8f5ec; color: var(--ok); border: 1px solid #b9dfc4; }
+    .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; vertical-align: top; padding: 6px 8px; border-top: 1px solid var(--line); }
+    th { border-top: 0; font-size: 13px; color: var(--muted); font-weight: 600; }
+    td.time { white-space: nowrap; }
+    button { font: inherit; padding: 4px 11px; border-radius: 6px; border: 1px solid var(--accent);
+             background: var(--accent); color: #fff; cursor: pointer; }
+    button.plain { background: #fff; color: var(--accent); }
+    button.danger { background: #fff; color: var(--warn); border-color: var(--warn); }
+    button.link { border: 0; background: none; color: var(--accent); padding: 0; text-decoration: underline; }
+    button.tab { background: #fff; color: var(--ink); border-color: var(--line); }
+    button.tab.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+    button:disabled { opacity: .5; cursor: default; }
+    input, select, textarea { font: inherit; padding: 4px 7px; border: 1px solid var(--line); border-radius: 6px; max-width: 100%; }
+    td input[type=text], td textarea { width: 100%; }
+    textarea { min-height: 60px; }
+    label { display: inline-flex; align-items: center; gap: 6px; }
+    dl { display: grid; grid-template-columns: max-content 1fr; gap: 8px 14px; margin: 0 0 12px; align-items: center; }
+    dt { color: var(--muted); }
+    dd { margin: 0; }
+    code { background: #eef1f4; padding: 1px 5px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+<main>
+  <div id="app"><p class="muted">Loading...</p></div>
+  <div id="signin" hidden></div>
+</main>
+<script>
+  var API = (window.SIGNUP_API || '').replace(/\/+$/, '');
+  var TOKEN_KEY = 'signup_token';
+  var TZ = 'America/New_York';
+  var TABS = ['Overview', 'Roster', 'Groups', 'Datasets', 'Topics', 'Log'];
+  var token = '', me = '', classes = [], cur = '', C = null, tab = 'Overview';
+  var flash = null, busy = false, logRows = null, logSearch = '';
+  try { token = sessionStorage.getItem(TOKEN_KEY) || ''; cur = sessionStorage.getItem('signup_admin_class') || ''; } catch (e) {}
+
+  // ---------------------------------------------------------------- plumbing
+
+  function el(tag, attrs) {
+    var e = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) {
+      if (k === 'text') e.textContent = attrs[k];
+      else if (k === 'value') e.value = attrs[k];
+      else if (k === 'on') Object.keys(attrs.on).forEach(function (ev) { e.addEventListener(ev, attrs.on[ev]); });
+      else if (attrs[k] !== false && attrs[k] !== null) e.setAttribute(k, attrs[k] === true ? '' : attrs[k]);
+    });
+    for (var i = 2; i < arguments.length; i++) {
+      var kid = arguments[i];
+      if (kid === null || kid === undefined || kid === false) continue;
+      e.appendChild(typeof kid === 'string' ? document.createTextNode(kid) : kid);
+    }
+    return e;
+  }
+
+  function setToken(t) {
+    token = t || '';
+    try { token ? sessionStorage.setItem(TOKEN_KEY, token) : sessionStorage.removeItem(TOKEN_KEY); } catch (e) {}
+  }
+
+  function setClass(key) {
+    cur = key || ''; C = null; logRows = null;
+    try { sessionStorage.setItem('signup_admin_class', cur); } catch (e) {}
+  }
+
+  /** Calls the backend. The body is sent as plain text so the browser makes no preflight request. */
+  function call(action, args, key) {
+    return fetch(API + '/admin', { method: 'POST',
+      body: JSON.stringify({ token: token, class: key === undefined ? cur : key, action: action, args: args || [] }) })
+      .then(function (r) { return r.json(); })
+      .then(function (out) {
+        if (out.ok) return out.data;
+        if (out.error === 'SIGNIN') { setToken(''); showSignIn(); throw new Error('SIGNIN'); }
+        throw new Error(out.error);
+      });
+  }
+
+  function fail(e) {
+    busy = false;
+    if (e.message === 'SIGNIN') return;
+    flash = { err: e.message }; render();
+  }
+
+  /** Runs one instructor action on the current class and redraws. */
+  function run(action, args, okText) {
+    busy = true; flash = null;
+    call(action, args).then(function (d) {
+      busy = false; C = d.state; logRows = null; flash = { ok: okText };
+      render();
+      if (action === 'saveSettings') refreshClasses();
+    }).catch(fail);
+  }
+
+  function refreshClasses() {
+    call('whoami', [], '').then(function (d) { classes = d.classes; render(); }).catch(function () {});
+  }
+
+  function loadClass() {
+    if (!cur) { render(); return; }
+    call('get').then(function (d) { C = d.state; render(); if (tab === 'Log') loadLog(); }).catch(fail);
+  }
+
+  function loadLog() {
+    call('log', [logSearch, 500]).then(function (d) { logRows = d.rows; render(); }).catch(fail);
+  }
+
+  function start() {
+    call('whoami', [], '').then(function (d) {
+      me = d.email; classes = d.classes;
+      if (!classes.some(function (c) { return c.key === cur; })) setClass(classes.length ? classes[0].key : '');
+      loadClass();
+    }).catch(function (e) {
+      if (e.message === 'SIGNIN') return;
+      var app = document.getElementById('app');
+      app.innerHTML = '';
+      app.appendChild(el('div', { class: 'banner err', text: e.message }));
+      app.appendChild(el('p', {}, el('button', { class: 'link', text: 'Sign out', on: { click: signOut } })));
+    });
+  }
+
+  // ---------------------------------------------------------------- sign-in
+
+  function whenGoogleReady(fn) {
+    if (window.google && google.accounts && google.accounts.id) fn();
+    else setTimeout(function () { whenGoogleReady(fn); }, 100);
+  }
+
+  function showSignIn() {
+    var app = document.getElementById('app'), box = document.getElementById('signin');
+    app.innerHTML = '';
+    app.appendChild(el('h1', { text: 'Group sign-up: instructor page' }));
+    app.appendChild(el('p', { class: 'muted', text: 'Sign in with an instructor account.' }));
+    box.hidden = false; box.innerHTML = '';
+    whenGoogleReady(function () { google.accounts.id.renderButton(box, { theme: 'outline', size: 'large', text: 'signin_with' }); });
+  }
+
+  function signOut() {
+    setToken(''); C = null;
+    whenGoogleReady(function () { google.accounts.id.disableAutoSelect(); });
+    showSignIn();
+  }
+
+  function boot() {
+    var app = document.getElementById('app');
+    fetch(API + '/config').then(function (r) { return r.json(); }).then(function (c) {
+      if (!c.clientId) {
+        app.innerHTML = '';
+        app.appendChild(el('div', { class: 'banner err', text: 'Sign-in is not configured yet.' }));
+        return;
+      }
+      whenGoogleReady(function () {
+        google.accounts.id.initialize({ client_id: c.clientId, callback: function (resp) {
+          setToken(resp.credential);
+          document.getElementById('signin').hidden = true;
+          start();
+        } });
+      });
+      if (token) start(); else showSignIn();
+    }).catch(function () {
+      app.innerHTML = '';
+      app.appendChild(el('div', { class: 'banner err', text: 'The sign-up service did not respond. Reload the page in a minute.' }));
+    });
+  }
+
+  // ---------------------------------------------------------------- helpers
+
+  function when(iso) {
+    return iso ? new Date(iso).toLocaleString('en-US', { timeZone: TZ, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit' }) : '';
+  }
+
+  /** ISO time to the value of a datetime-local input, in this computer's time zone. */
+  function localValue(iso) {
+    if (!iso) return '';
+    var d = new Date(iso), p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+
+  function download(name, rows) {
+    var csv = rows.map(function (r) {
+      return r.map(function (v) { return '"' + String(v === null || v === undefined ? '' : v).replace(/"/g, '""') + '"'; }).join(',');
+    }).join('\r\n');
+    var a = el('a', { href: URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv' })), download: name });
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+
+  function fullName(r) { return (r.first + ' ' + r.last).trim(); }
+  function membersOf(name) { return C.roster.filter(function (r) { return r.group === name; }); }
+  function studentLink() { return location.href.replace(/admin\.html.*$/, '') + '?c=' + encodeURIComponent(cur); }
+
+  function select(options, value, onChange) {
+    var s = el('select', { disabled: busy, on: { change: function (ev) { onChange(ev.target.value); } } });
+    options.forEach(function (o) { s.appendChild(el('option', { value: o[0], text: o[1], selected: o[0] === value, disabled: !!o[2] })); });
+    return s;
+  }
+
+  function button(label, cls, fn) { return el('button', { text: label, class: cls, disabled: busy, on: { click: fn } }); }
+
+  // ---------------------------------------------------------------- rendering
+
+  function render() {
+    var app = document.getElementById('app');
+    var keepScroll = window.scrollY;
+    app.innerHTML = '';
+    document.getElementById('signin').hidden = true;
+    app.appendChild(el('h1', { text: 'Group sign-up: instructor page' }));
+    app.appendChild(el('div', { class: 'muted' }, 'Signed in as ' + me + ' · ',
+      el('button', { class: 'link', text: 'Sign out', on: { click: signOut } })));
+    if (flash && flash.err) app.appendChild(el('div', { class: 'banner err', text: flash.err }));
+    if (flash && flash.ok) app.appendChild(el('div', { class: 'banner ok', text: flash.ok }));
+
+    // ---- class picker and new class
+    var top = el('div', { class: 'card' });
+    var keyIn = el('input', { type: 'text', placeholder: 'key, for example econ573-f26', size: 24 });
+    var titleIn = el('input', { type: 'text', placeholder: 'title shown to students', size: 30 });
+    var copyIn = select([['', 'Standard catalog']].concat(classes.map(function (c) { return [c.key, 'Catalog and limits of ' + c.key]; })), '', function () {});
+    top.appendChild(el('div', { class: 'row' }, el('b', { text: 'Class:' }),
+      classes.length ? select(classes.map(function (c) { return [c.key, c.title + ' (' + c.key + ')']; }), cur,
+        function (v) { setClass(v); flash = null; loadClass(); }) : el('span', { class: 'muted', text: 'No class exists yet.' }),
+      cur ? button('Refresh', 'plain', function () { flash = null; loadClass(); }) : null));
+    top.appendChild(el('div', { class: 'row' }, el('span', { class: 'muted', text: 'New class:' }), keyIn, titleIn, copyIn,
+      button('Create', 'plain', function () {
+        busy = true; flash = null;
+        call('createClass', [keyIn.value, titleIn.value, copyIn.value], '').then(function (d) {
+          busy = false; classes = d.classes; setClass(d.key); tab = 'Overview'; flash = { ok: 'Class created.' }; loadClass();
+        }).catch(fail);
+      })));
+    app.appendChild(top);
+    if (!cur || !C) { window.scrollTo(0, keepScroll); return; }
+
+    var tabs = el('div', { class: 'tabs' });
+    TABS.forEach(function (t) {
+      tabs.appendChild(el('button', { text: t, class: 'tab' + (t === tab ? ' on' : ''), on: { click: function () {
+        tab = t; flash = null; render(); if (t === 'Log' && !logRows) loadLog();
+      } } }));
+    });
+    app.appendChild(tabs);
+    var card = el('div', { class: 'card' });
+    ({ Overview: overview, Roster: roster, Groups: groups, Datasets: datasets, Topics: topics, Log: log })[tab](card);
+    app.appendChild(card);
+    window.scrollTo(0, keepScroll);
+  }
+
+  function overview(card) {
+    var s = C.settings;
+    var f = {
+      title: el('input', { type: 'text', value: s.title, size: 40 }),
+      deadline: el('input', { type: 'datetime-local', value: localValue(s.deadline) }),
+      maxSize: el('input', { type: 'number', min: 1, value: s.maxSize, style: 'width:70px' }),
+      minToClaim: el('input', { type: 'number', min: 1, value: s.minToClaim, style: 'width:70px' }),
+      maxGroups: el('input', { type: 'number', min: 1, value: s.maxGroups, style: 'width:70px' })
+    };
+    var link = studentLink();
+    card.appendChild(el('h2', { text: 'Settings' }));
+    card.appendChild(el('dl', {},
+      el('dt', { text: 'Student link' }), el('dd', {}, el('a', { href: link, target: '_blank', rel: 'noopener', text: link })),
+      el('dt', { text: 'Course title' }), el('dd', {}, f.title),
+      el('dt', { text: 'Deadline' }), el('dd', {}, f.deadline, el('span', { class: 'muted', text: ' in this computer\'s time zone. Empty = no deadline. Students cannot change anything afterward.' })),
+      el('dt', { text: 'Maximum group size' }), el('dd', {}, f.maxSize, el('span', { class: 'muted', text: ' the group creator plus the students the creator approves' })),
+      el('dt', { text: 'Minimum members to claim' }), el('dd', {}, f.minToClaim),
+      el('dt', { text: 'Maximum number of groups' }), el('dd', {}, f.maxGroups, el('span', { class: 'muted', text: ' students are not shown this number' }))));
+    card.appendChild(button('Save settings', '', function () {
+      run('saveSettings', [{ title: f.title.value, deadline: f.deadline.value ? new Date(f.deadline.value).toISOString() : '',
+        maxSize: f.maxSize.value, minToClaim: f.minToClaim.value, maxGroups: f.maxGroups.value }], 'Settings saved.');
+    }));
+
+    var inGroup = C.roster.filter(function (r) { return r.group; }).length;
+    card.appendChild(el('h2', { style: 'margin-top:22px', text: 'Status' }));
+    card.appendChild(el('p', { text: C.roster.length + ' students on the roster, ' + inGroup + ' in a group. ' + C.groups.length + ' groups, ' +
+      C.groups.filter(function (g) { return g.dataset !== ''; }).length + ' with a dataset, ' +
+      C.groups.filter(function (g) { return g.topic !== ''; }).length + ' with a topic.' }));
+    card.appendChild(el('div', { class: 'row' },
+      button('Download groups (CSV)', 'plain', function () {
+        var rows = [['Group', 'Leader', 'Members', 'Member emails', 'Dataset code', 'Dataset', 'Own dataset link', 'Topic code', 'Topic']];
+        C.groups.forEach(function (g) {
+          var ms = membersOf(g.name);
+          var d = C.datasets.filter(function (x) { return x.code === g.dataset; })[0];
+          var t = C.topics.filter(function (x) { return x.code === g.topic; })[0];
+          var lead = ms.filter(function (r) { return r.email === g.leader; })[0];
+          rows.push([g.name, lead ? fullName(lead) : g.leader, ms.map(fullName).join('; '), ms.map(function (r) { return r.email; }).join('; '),
+            g.dataset, d ? d.name : '', g.ownLink, g.topic, t ? t.topic : '']);
+        });
+        download(cur + '_groups.csv', rows);
+      }),
+      button('Download full log (CSV)', 'plain', function () {
+        call('log', ['', 20000]).then(function (d) {
+          download(cur + '_log.csv', [['Time (UTC)', 'Account', 'Action', 'Detail']].concat(
+            d.rows.reverse().map(function (r) { return [r.time, r.actor, r.action, r.detail]; })));
+        }).catch(fail);
+      })));
+
+    card.appendChild(el('h2', { style: 'margin-top:22px', text: 'Delete this class' }));
+    card.appendChild(el('p', { class: 'muted', text: 'Deletes the roster, groups, claims, and log of this class. Download the two files above first.' }));
+    card.appendChild(button('Delete class', 'danger', function () {
+      var typed = prompt('This cannot be undone. Type the class key (' + cur + ') to delete the class.');
+      if (typed === null) return;
+      busy = true;
+      call('deleteClass', [typed]).then(function (d) {
+        busy = false; classes = d.classes; setClass(classes.length ? classes[0].key : ''); flash = { ok: 'Class deleted.' }; loadClass();
+      }).catch(fail);
+    }));
+  }
+
+  function roster(card) {
+    card.appendChild(el('h2', { text: 'Roster (' + C.roster.length + ')' }));
+    var file = el('input', { type: 'file', accept: '.csv,text/csv' });
+    card.appendChild(el('div', { class: 'row' }, el('span', { text: 'Import a CSV with first name, last name, and email columns:' }), file,
+      button('Import', '', function () {
+        if (!file.files.length) { flash = { err: 'Choose a CSV file first.' }; render(); return; }
+        if (C.roster.length && !confirm('The file replaces the roster. Students in the file keep their group. Students missing from the file are removed from the class and from their group. Continue?')) return;
+        var reader = new FileReader();
+        reader.onload = function () { run('importRoster', [String(reader.result)], 'Roster imported.'); };
+        reader.readAsText(file.files[0]);
+      })));
+    var a = { first: el('input', { type: 'text', placeholder: 'First name', size: 14 }), last: el('input', { type: 'text', placeholder: 'Last name', size: 14 }),
+              email: el('input', { type: 'text', placeholder: 'Email', size: 26 }) };
+    card.appendChild(el('div', { class: 'row' }, el('span', { text: 'Add one student:' }), a.first, a.last, a.email,
+      button('Add', 'plain', function () { run('addStudent', [a.first.value, a.last.value, a.email.value], 'Student added.'); })));
+
+    var options = [['', 'No group']].concat(C.groups.map(function (g) { return [g.name, g.name]; }), [['new', 'New group (as leader)']]);
+    var pending = {};
+    C.requests.forEach(function (q) { if (q.status === 'pending') pending[q.email] = q.group; });
+    var t = el('table', {}, el('tr', {}, el('th', { text: 'Student' }), el('th', { text: 'Email' }), el('th', { text: 'Group' }), el('th', { text: 'Note' }), el('th', {})));
+    C.roster.forEach(function (r) {
+      var g = C.groups.filter(function (x) { return x.name === r.group; })[0];
+      t.appendChild(el('tr', {}, el('td', { text: fullName(r) }), el('td', { text: r.email }),
+        el('td', {}, select(options, r.group, function (v) { run('moveStudent', [r.email, v], fullName(r) + ' moved.'); })),
+        el('td', { class: 'muted', text: g && g.leader === r.email ? 'Leader' : pending[r.email] ? 'Asked to join ' + pending[r.email] : '' }),
+        el('td', {}, button('Remove', 'danger', function () {
+          if (confirm('Remove ' + fullName(r) + ' from the class?')) run('removeStudent', [r.email], fullName(r) + ' removed.');
+        }))));
+    });
+    card.appendChild(t);
+  }
+
+  function groups(card) {
+    card.appendChild(el('h2', { text: 'Groups (' + C.groups.length + ')' }));
+    if (!C.groups.length) card.appendChild(el('p', { class: 'muted', text: 'No group exists yet.' }));
+    var t = el('table', {}, el('tr', {}, el('th', { text: 'Group' }), el('th', { text: 'Members' }), el('th', { text: 'Leader' }),
+      el('th', { text: 'Dataset' }), el('th', { text: 'Topic' }), el('th', {})));
+    C.groups.forEach(function (g) {
+      var ms = membersOf(g.name);
+      var held = function (field, code) { return C.groups.some(function (x) { return x !== g && x[field] === code; }); };
+      var d = C.datasets.filter(function (x) { return x.code === g.dataset; })[0];
+      var dOpts = [['', 'None']].concat(C.datasets.map(function (x) { return [x.code, x.code + '. ' + x.name.slice(0, 50), !x.own && held('dataset', x.code)]; }));
+      var tOpts = [['', 'None']].concat(C.topics.map(function (x) { return [x.code, x.code + '. ' + x.topic.slice(0, 50), held('topic', x.code)]; }));
+      var dCell = el('td', {}, select(dOpts, g.dataset, function (v) {
+        var own = C.datasets.filter(function (x) { return x.code === v; })[0];
+        var link = own && own.own ? prompt('Web link of the dataset the group chose:', g.ownLink) : '';
+        if (link === null) { render(); return; }
+        run('setClaim', [g.name, 'dataset', v, link], 'Dataset saved for ' + g.name + '.');
+      }));
+      if (d && d.own) dCell.appendChild(el('div', { class: 'muted', text: g.ownLink || 'No link' }));
+      t.appendChild(el('tr', {}, el('td', {}, el('b', { text: g.name }), el('div', { class: 'muted', text: 'created ' + when(g.createdAt) })),
+        el('td', { text: ms.map(fullName).join(', ') }),
+        el('td', {}, select(ms.map(function (r) { return [r.email, fullName(r)]; }), g.leader,
+          function (v) { run('setLeader', [g.name, v], 'Leader changed for ' + g.name + '.'); })),
+        dCell,
+        el('td', {}, select(tOpts, g.topic, function (v) { run('setClaim', [g.name, 'topic', v], 'Topic saved for ' + g.name + '.'); })),
+        el('td', {}, button('Delete', 'danger', function () {
+          if (confirm('Delete ' + g.name + '? Its members stay on the roster without a group, and its claims are released.')) run('deleteGroup', [g.name], g.name + ' deleted.');
+        }))));
+    });
+    if (C.groups.length) card.appendChild(t);
+    card.appendChild(el('p', { class: 'muted', style: 'margin-top:10px', text: 'To move a student between groups, use the Roster tab. An item claimed by another group is greyed out: release it there first.' }));
+  }
+
+  /** An editable catalog table. fields: [key, label, kind] with kind text, long, or check. */
+  function catalog(card, title, items, fields, saveAction, removeAction, claimField) {
+    card.appendChild(el('h2', { text: title + ' (' + items.length + ')' }));
+    var head = el('tr', {});
+    fields.forEach(function (f) { head.appendChild(el('th', { text: f[1] })); });
+    head.appendChild(el('th', { text: 'Claimed by' })); head.appendChild(el('th', {}));
+    var t = el('table', {}, head);
+    var line = function (item) {
+      var inputs = {};
+      var tr = el('tr', {});
+      fields.forEach(function (f) {
+        var v = item ? item[f[0]] : (f[2] === 'check' ? false : '');
+        var inp = f[2] === 'check' ? el('input', { type: 'checkbox', checked: !!v })
+          : f[2] === 'long' ? el('textarea', { value: v })
+          : el('input', { type: 'text', value: v, readonly: !!item && f[0] === 'code', style: f[0] === 'code' ? 'width:60px' : null });
+        inputs[f[0]] = inp;
+        tr.appendChild(el('td', {}, inp));
+      });
+      var holders = item ? C.groups.filter(function (g) { return g[claimField] === item.code; }).map(function (g) { return g.name; }) : [];
+      tr.appendChild(el('td', { class: 'muted', text: holders.join(', ') }));
+      tr.appendChild(el('td', { style: 'white-space:nowrap' }, button(item ? 'Save' : 'Add', item ? 'plain' : '', function () {
+        var v = {};
+        fields.forEach(function (f) { v[f[0]] = f[2] === 'check' ? inputs[f[0]].checked : inputs[f[0]].value; });
+        run(saveAction, [v], 'Saved.');
+      }), ' ', item ? button('Remove', 'danger', function () {
+        if (confirm('Remove item ' + item.code + '?')) run(removeAction, [item.code], 'Removed.');
+      }) : null));
+      return tr;
+    };
+    items.forEach(function (item) { t.appendChild(line(item)); });
+    t.appendChild(line(null));
+    card.appendChild(t);
+  }
+
+  function datasets(card) {
+    catalog(card, 'Datasets', C.datasets, [['code', 'Code', 'text'], ['name', 'Name', 'text'], ['link', 'Link', 'text'],
+      ['own', 'Own choice (open to every group, link required)', 'check'], ['reserved', 'Reserved (text shown instead of Claim)', 'text']],
+      'saveDataset', 'removeDataset', 'dataset');
+  }
+
+  function topics(card) {
+    catalog(card, 'Presentation topics', C.topics, [['code', 'Code', 'text'], ['topic', 'Topic', 'text'], ['description', 'Description', 'long']],
+      'saveTopic', 'removeTopic', 'topic');
+  }
+
+  function log(card) {
+    card.appendChild(el('h2', { text: 'Activity log' }));
+    var q = el('input', { type: 'text', placeholder: 'email, action, or text', value: logSearch, size: 30,
+      on: { keydown: function (ev) { if (ev.key === 'Enter') { logSearch = q.value; loadLog(); } } } });
+    card.appendChild(el('div', { class: 'row' }, q, button('Search', 'plain', function () { logSearch = q.value; loadLog(); }),
+      el('span', { class: 'muted', text: 'Newest first, up to 500 lines. Times are Eastern. The Overview tab downloads the full log.' })));
+    if (!logRows) { card.appendChild(el('p', { class: 'muted', text: 'Loading...' })); return; }
+    var t = el('table', {}, el('tr', {}, el('th', { text: 'Time' }), el('th', { text: 'Account' }), el('th', { text: 'Action' }), el('th', { text: 'Detail' })));
+    logRows.forEach(function (r) {
+      t.appendChild(el('tr', {}, el('td', { class: 'time', text: when(r.time) }), el('td', { text: r.actor }), el('td', { text: r.action }), el('td', { text: r.detail })));
+    });
+    card.appendChild(t);
+    if (!logRows.length) card.appendChild(el('p', { class: 'muted', text: 'No lines.' }));
+  }
+
+  boot();
+</script>
+</body>
+</html>

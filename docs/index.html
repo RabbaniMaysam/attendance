@@ -51,6 +51,7 @@
     .tile.topic { background: linear-gradient(135deg, #1a7f37, #3aa85a); }
     .tile.todo { background: linear-gradient(135deg, #b36b00, #e69a1a); }
     .tile.open { outline: 3px solid rgba(0, 0, 0, .2); }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     .detail { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: -4px 0 12px; background: #fafbfc; word-break: break-word; }
     button.switch { background: var(--warn); border-color: var(--warn); color: #fff; }
     .group .line { font-size: 13px; margin-top: 3px; }
@@ -350,6 +351,15 @@
           el('dt', { text: 'Group' }), el('dd', { text: my.name }),
           el('dt', { text: 'Members' }), el('dd', {}, members)));
 
+        // Releasing frees the item without taking another; two groups use it to swap when everything is taken.
+        var releaseButton = function (kind, name) {
+          return actionButton('Release it without switching',
+            { title: 'Release "' + name + '"?', ok: 'Release ' + kind, danger: true, lines: [
+              'Your group will have no ' + kind + ' until you claim another one.',
+              'Any group can claim "' + name + '" the moment it is free, not only the one you have in mind.',
+              'To swap with another group, agree on the order first: one group releases, the other switches to the freed ' + kind + ', then the first group claims the one that became free.'] },
+            function () { send(kind === 'dataset' ? 'releaseDataset' : 'releaseTopic', [], 'Released. Your group has no ' + kind + ' now.'); }, true);
+        };
         // Two tiles, one per task. A claimed tile expands to its details and a switch button; an unclaimed one opens the list.
         var tile = function (kind, have, label, p) {
           if (!have) return el('button', { class: 'tile todo', on: { click: open(p) } },
@@ -368,15 +378,19 @@
           if (url) box.appendChild(el('p', {}, el('a', { href: url, target: '_blank', rel: 'noopener', text: url })));
           else box.appendChild(el('p', { class: 'muted', text: 'No link is on file for this dataset.' }));
           if (my.datasetBy === 'instructor') box.appendChild(el('p', { class: 'muted', text: 'Set by the instructor.' }));
-          if (canClaim) box.appendChild(el('button', { class: 'switch', text: 'Want to switch to another dataset?', on: { click: open('datasets') } }));
-          else box.appendChild(el('p', { class: 'muted', text: 'Only the leader, ' + my.leader + ', can switch it.' }));
+          if (canClaim) box.appendChild(el('div', { class: 'row' },
+            el('button', { class: 'switch', text: 'Want to switch to another dataset?', on: { click: open('datasets') } }),
+            releaseButton('dataset', d.name)));
+          else box.appendChild(el('p', { class: 'muted', text: 'Only the leader, ' + my.leader + ', can switch or release it.' }));
           card.appendChild(box);
         }
         if (expanded === 'topic' && t) {
           var tbox = el('div', { class: 'detail' }, el('p', { text: t.description || 'No description.' }));
           if (my.topicBy === 'instructor') tbox.appendChild(el('p', { class: 'muted', text: 'Set by the instructor.' }));
-          if (canClaim) tbox.appendChild(el('button', { class: 'switch', text: 'Want to switch to another topic?', on: { click: open('topics') } }));
-          else tbox.appendChild(el('p', { class: 'muted', text: 'Only the leader, ' + my.leader + ', can switch it.' }));
+          if (canClaim) tbox.appendChild(el('div', { class: 'row' },
+            el('button', { class: 'switch', text: 'Want to switch to another topic?', on: { click: open('topics') } }),
+            releaseButton('topic', t.topic)));
+          else tbox.appendChild(el('p', { class: 'muted', text: 'Only the leader, ' + my.leader + ', can switch or release it.' }));
           card.appendChild(tbox);
         }
 

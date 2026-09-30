@@ -197,6 +197,23 @@ const ACTIONS = {
     if (holder) throw new Error('"' + t.topic + '" was just claimed by ' + holder.name + '. Choose another topic.');
     g.topic = t.code; g.topicAt = c.now; g.topicBy = 'group'; g.groupTopic = t.code;
     c.log('claim topic', g.name + ': ' + t.code + ' ' + t.topic);
+  },
+
+  // Releasing frees the item for any group. It lets two groups swap items when everything is taken.
+  releaseDataset(c) {
+    const g = claimingGroup(c);
+    if (g.dataset === '') return;
+    const d = c.s.datasets.find(x => x.code === g.dataset);
+    c.log('release dataset', g.name + ': ' + g.dataset + ' ' + (d ? d.name : ''));
+    g.dataset = ''; g.ownLink = ''; g.datasetAt = ''; g.datasetBy = ''; g.groupDataset = '';
+  },
+
+  releaseTopic(c) {
+    const g = claimingGroup(c);
+    if (g.topic === '') return;
+    const t = c.s.topics.find(x => x.code === g.topic);
+    c.log('release topic', g.name + ': ' + g.topic + ' ' + (t ? t.topic : ''));
+    g.topic = ''; g.topicAt = ''; g.topicBy = ''; g.groupTopic = '';
   }
 };
 

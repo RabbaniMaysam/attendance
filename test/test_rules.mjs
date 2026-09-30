@@ -127,6 +127,10 @@ ok(state('c').closed === true && /at/.test(state('c').deadlineText), 'state repo
 adm('saveSettings', Object.assign({}, S.settings, { deadline: new Date(Date.now() + 1e6).toISOString() }));
 s = act1('c', 'claimTopic', 7);
 ok(s.closed === false && s.groups.find(g => g.name === 'Group 2').topic === '7', 'future deadline allows changes');
+throws(() => act1('d', 'releaseTopic'), /Only the group leader/, 'member cannot release');
+s = act1('c', 'releaseTopic');
+ok(grp('Group 2').topic === '' && grp('Group 2').groupTopic === '' && s.topics.find(t => t.code === '7').claimedBy.length === 0, 'leader releases the topic');
+s = act1('c', 'claimTopic', 7);
 ok(s.groups.find(g => g.name === 'Group 1').members[0].email === '', 'other groups carry no emails');
 
 // instructor actions: Group 1 = a (leader), request from b pending; Group 2 = c (leader), d; request from e pending

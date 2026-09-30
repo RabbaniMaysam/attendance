@@ -108,7 +108,7 @@
   }
 
   function setClass(key) {
-    cur = key || ''; D = null;
+    cur = key || ''; D = null; settingsDraft = null;
     try { sessionStorage.setItem('att_admin_class', cur); } catch (e) {}
   }
 
@@ -185,7 +185,8 @@
   }
 
   function signOut() {
-    setToken(''); D = null;
+    if (settingsDirty()) { leaveSettings().then(function (go) { if (go) signOut(); }); return; }
+    setToken(''); D = null; settingsDraft = null;
     whenGoogleReady(function () { google.accounts.id.disableAutoSelect(); });
     showSignIn();
   }
@@ -225,22 +226,53 @@
   }
 
   /** A confirmation pop-up. Resolves to true when confirmed. */
-  function ask(title, lines, okLabel, danger) {
+  /** A dialog with the given buttons [{label, value, cls}]; resolves the chosen value, or null on Cancel, Esc, or a click outside. */
+  function choose(title, lines, buttons) {
     return new Promise(function (resolve) {
       var veil;
-      var done = function (yes) { veil.remove(); document.removeEventListener('keydown', onKey); resolve(yes); };
-      var onKey = function (ev) { if (ev.key === 'Escape') done(false); };
+      var done = function (v) { veil.remove(); document.removeEventListener('keydown', onKey); resolve(v); };
+      var onKey = function (ev) { if (ev.key === 'Escape') done(null); };
       var box = el('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' }, el('h2', { text: title }));
       lines.forEach(function (l) { box.appendChild(el('p', { text: l })); });
-      var ok = el('button', { text: okLabel, class: danger ? 'danger solid' : '', on: { click: function () { done(true); } } });
-      box.appendChild(el('div', { class: 'buttons' },
-        el('button', { class: 'plain', text: 'Cancel', on: { click: function () { done(false); } } }), ok));
-      veil = el('div', { class: 'veil', on: { click: function (ev) { if (ev.target === veil) done(false); } } }, box);
+      var row = el('div', { class: 'buttons' }, el('button', { class: 'plain', text: 'Cancel', on: { click: function () { done(null); } } }));
+      var first = null;
+      buttons.forEach(function (b) {
+        var btn = el('button', { text: b.label, class: b.cls || '', on: { click: function () { done(b.value); } } });
+        row.appendChild(btn); first = first || btn;
+      });
+      box.appendChild(row);
+      veil = el('div', { class: 'veil', on: { click: function (ev) { if (ev.target === veil) done(null); } } }, box);
       document.body.appendChild(veil);
       document.addEventListener('keydown', onKey);
-      ok.focus();
+      first.focus();
     });
   }
+
+  function ask(title, lines, okLabel, danger) {
+    return choose(title, lines, [{ label: okLabel, value: true, cls: danger ? 'danger solid' : '' }]).then(function (v) { return v === true; });
+  }
+
+  // Unsaved edits on the Settings tab: kept in settingsDraft across redraws, and checked before the tab or class changes.
+  var settingsDraft = null;
+  function settingsDirty() { return !!(settingsDraft && D && JSON.stringify(settingsDraft) !== JSON.stringify(settingsOf(D.state))); }
+  function settingsOf(S) {
+    return { title: S.title, days: S.schedule.days.slice(), open: S.schedule.open, close: S.schedule.close,
+             start: S.schedule.start || '', end: S.schedule.end || '', skip: S.skip.join('\n') };
+  }
+  /** Resolves true when it is fine to leave the Settings form (nothing to save, saved, or discarded), false to stay. */
+  function leaveSettings() {
+    if (!settingsDirty()) return Promise.resolve(true);
+    return choose('Save the settings?', ['You changed the settings but did not save them.'],
+      [{ label: "Don't save", value: 'discard', cls: 'plain' }, { label: 'Save', value: 'save' }]).then(function (v) {
+      if (v === 'discard') { settingsDraft = null; return true; }
+      if (v !== 'save') return false;
+      busy = true; flash = null;
+      return call('saveSettings', [settingsDraft]).then(function (d) {
+        busy = false; D = d; settingsDraft = null; flash = { ok: 'Settings saved.' }; refreshClasses(); return true;
+      }).catch(function (e) { fail(e); return false; });
+    });
+  }
+  window.addEventListener('beforeunload', function (ev) { if (settingsDirty()) { ev.preventDefault(); ev.returnValue = ''; } });
 
   /** Full-screen QR code of the student link, for the classroom projector. The status line follows the 10-second grid refresh. */
   function showQr() {
@@ -287,7 +319,11 @@
     // class chooser and creation
     var chooser = el('div', { class: 'row' });
     if (classes.length) {
-      var sel = el('select', { disabled: busy, on: { change: function (ev) { setClass(ev.target.value); flash = null; loadClass(false); } } });
+      var sel = el('select', { disabled: busy, on: { change: function (ev) {
+        var key = ev.target.value;
+        flash = null;
+        leaveSettings().then(function (go) { if (!go) { ev.target.value = cur; return; } settingsDraft = null; setClass(key); loadClass(false); });
+      } } });
       classes.forEach(function (c) { sel.appendChild(el('option', { value: c.key, text: (c.title || c.key) + ' (' + c.key + ')' })); });
       sel.value = cur;
       chooser.appendChild(el('label', {}, 'Class ', sel));
@@ -312,7 +348,10 @@
 
     var tabs = el('div', { class: 'tabs' });
     TABS.forEach(function (t) {
-      tabs.appendChild(el('button', { class: 'tab' + (t === tab ? ' on' : ''), text: t, on: { click: function () { tab = t; flash = null; render(); } } }));
+      tabs.appendChild(el('button', { class: 'tab' + (t === tab ? ' on' : ''), text: t, on: { click: function () {
+        flash = null;
+        leaveSettings().then(function (go) { if (!go) return; tab = t; render(); });
+      } } }));
     });
     app.appendChild(tabs);
     var card = el('div', { class: 'card' });
@@ -379,15 +418,26 @@
 
   // ---- Settings
   function settings(card) {
-    var S = D.state, sch = S.schedule;
-    var title = el('input', { type: 'text', value: S.title, size: 40 });
+    var S = D.state, v = settingsDraft || settingsOf(S);
+    var title = el('input', { type: 'text', value: v.title, size: 40 });
     var days = DAY_NAMES.map(function (name, i) {
-      var cb = el('input', { type: 'checkbox' }); cb.checked = sch.days.indexOf(i) !== -1;
+      var cb = el('input', { type: 'checkbox' }); cb.checked = v.days.indexOf(i) !== -1;
       return { i: i, cb: cb, label: el('label', {}, cb, name.slice(0, 3)) };
     });
-    var open = el('input', { type: 'time', value: sch.open }), close = el('input', { type: 'time', value: sch.close });
-    var start = el('input', { type: 'date', value: sch.start || '' }), end = el('input', { type: 'date', value: sch.end || '' });
-    var skip = el('textarea', { value: S.skip.join('\n'), placeholder: '2026-11-26' });
+    var open = el('input', { type: 'time', value: v.open }), close = el('input', { type: 'time', value: v.close });
+    var start = el('input', { type: 'date', value: v.start }), end = el('input', { type: 'date', value: v.end });
+    var skip = el('textarea', { value: v.skip, placeholder: '2026-11-26' });
+    var form = function () {
+      return { title: title.value, days: days.filter(function (d) { return d.cb.checked; }).map(function (d) { return d.i; }),
+               open: open.value, close: close.value, start: start.value, end: end.value, skip: skip.value };
+    };
+    // Every edit updates the draft, so the form survives redraws and the tab-change check sees it.
+    var note = el('span', { class: 'muted', text: settingsDirty() ? 'Unsaved changes.' : '' });
+    var edited = function () { settingsDraft = form(); note.textContent = settingsDirty() ? 'Unsaved changes.' : ''; };
+    [title, open, close, start, end, skip].concat(days.map(function (d) { return d.cb; })).forEach(function (inp) {
+      inp.addEventListener('input', edited);
+      inp.addEventListener('change', edited);
+    });
     card.appendChild(el('h2', { text: 'Schedule' }));
     var dayRow = el('div', { class: 'row' }); days.forEach(function (d) { dayRow.appendChild(d.label); });
     card.appendChild(el('dl', {},
@@ -399,9 +449,12 @@
       el('dt', { text: 'Last class day' }), el('dd', {}, end, ' ', el('span', { class: 'muted', text: 'optional; no windows after it' })),
       el('dt', { text: 'No class on' }), el('dd', {}, skip, el('div', { class: 'muted', text: 'One date per line, YYYY-MM-DD (holidays, cancelled classes).' }))));
     card.appendChild(el('div', { class: 'row' }, button('Save', '', function () {
-      run('saveSettings', [{ title: title.value, days: days.filter(function (d) { return d.cb.checked; }).map(function (d) { return d.i; }),
-        open: open.value, close: close.value, start: start.value, end: end.value, skip: skip.value }], 'Settings saved.');
-    })));
+      settingsDraft = form();
+      busy = true; flash = null;
+      call('saveSettings', [settingsDraft]).then(function (d) {
+        busy = false; D = d; settingsDraft = null; flash = { ok: 'Settings saved.' }; render(); refreshClasses();
+      }).catch(fail);  // on a refused save the draft stays, so the form keeps the edits
+    }), note));
 
     card.appendChild(el('h2', { text: 'One-off windows', style: 'margin-top:18px' }));
     card.appendChild(el('p', { class: 'muted', text: 'A window on a date outside the weekly schedule (a moved class, or a window you opened with "Open attendance now"). Marks made in any window are kept in the grid and the CSV, also after the window is removed here.' }));
@@ -423,7 +476,7 @@
       ask('Delete ' + cur + '?', ['Its roster, settings, and every attendance mark are deleted. This cannot be undone.'], 'Delete class', true).then(function (yes) {
         if (!yes) return;
         busy = true;
-        call('deleteClass', [conf.value]).then(function (d) { busy = false; classes = d.classes; setClass(classes.length ? classes[0].key : ''); flash = { ok: 'Class deleted.' }; loadClass(false); }).catch(fail);
+        call('deleteClass', [conf.value]).then(function (d) { busy = false; classes = d.classes; settingsDraft = null; setClass(classes.length ? classes[0].key : ''); flash = { ok: 'Class deleted.' }; loadClass(false); }).catch(fail);
       });
     })));
   }

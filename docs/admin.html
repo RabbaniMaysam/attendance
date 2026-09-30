@@ -97,7 +97,7 @@
   }
 
   function setClass(key) {
-    cur = key || ''; C = null; logRows = null; snapRows = null;
+    cur = key || ''; C = null; logRows = null; snapRows = null; settingsDraft = null;
     try { sessionStorage.setItem('signup_admin_class', cur); } catch (e) {}
   }
 
@@ -178,7 +178,8 @@
   }
 
   function signOut() {
-    setToken(''); C = null;
+    if (settingsDirty()) { leaveSettings().then(function (go) { if (go) signOut(); }); return; }
+    setToken(''); C = null; settingsDraft = null;
     whenGoogleReady(function () { google.accounts.id.disableAutoSelect(); });
     showSignIn();
   }
@@ -242,22 +243,55 @@
   function button(label, cls, fn) { return el('button', { text: label, class: cls, disabled: busy, on: { click: fn } }); }
 
   /** A confirmation pop-up. Resolves to true when confirmed. */
-  function ask(title, lines, okLabel, danger) {
+  /** A dialog with the given buttons [{label, value, cls}]; resolves the chosen value, or null on Cancel, Esc, or a click outside. */
+  function choose(title, lines, buttons) {
     return new Promise(function (resolve) {
       var veil;
-      var done = function (yes) { veil.remove(); document.removeEventListener('keydown', onKey); resolve(yes); };
-      var onKey = function (ev) { if (ev.key === 'Escape') done(false); };
+      var done = function (v) { veil.remove(); document.removeEventListener('keydown', onKey); resolve(v); };
+      var onKey = function (ev) { if (ev.key === 'Escape') done(null); };
       var box = el('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' }, el('h2', { text: title }));
       lines.forEach(function (l) { box.appendChild(el('p', { text: l })); });
-      var ok = el('button', { text: okLabel, class: danger ? 'danger solid' : '', on: { click: function () { done(true); } } });
-      box.appendChild(el('div', { class: 'buttons' },
-        el('button', { class: 'plain', text: 'Cancel', on: { click: function () { done(false); } } }), ok));
-      veil = el('div', { class: 'veil', on: { click: function (ev) { if (ev.target === veil) done(false); } } }, box);
+      var row = el('div', { class: 'buttons' }, el('button', { class: 'plain', text: 'Cancel', on: { click: function () { done(null); } } }));
+      var first = null;
+      buttons.forEach(function (b) {
+        var btn = el('button', { text: b.label, class: b.cls || '', on: { click: function () { done(b.value); } } });
+        row.appendChild(btn); first = first || btn;
+      });
+      box.appendChild(row);
+      veil = el('div', { class: 'veil', on: { click: function (ev) { if (ev.target === veil) done(null); } } }, box);
       document.body.appendChild(veil);
       document.addEventListener('keydown', onKey);
-      ok.focus();
+      first.focus();
     });
   }
+
+  function ask(title, lines, okLabel, danger) {
+    return choose(title, lines, [{ label: okLabel, value: true, cls: danger ? 'danger solid' : '' }]).then(function (v) { return v === true; });
+  }
+
+  // Unsaved edits of the Overview settings: kept in settingsDraft across redraws, and checked before the tab or class changes.
+  var settingsDraft = null;
+  function settingsOf(s) {
+    return { title: s.title, deadline: localValue(s.deadline), maxSize: String(s.maxSize), minToClaim: String(s.minToClaim), maxGroups: String(s.maxGroups) };
+  }
+  function settingsDirty() { return !!(settingsDraft && C && JSON.stringify(settingsDraft) !== JSON.stringify(settingsOf(C.settings))); }
+  function settingsArgs(v) {
+    return { title: v.title, deadline: v.deadline ? new Date(v.deadline).toISOString() : '', maxSize: v.maxSize, minToClaim: v.minToClaim, maxGroups: v.maxGroups };
+  }
+  /** Resolves true when it is fine to leave the settings form (nothing to save, saved, or discarded), false to stay. */
+  function leaveSettings() {
+    if (!settingsDirty()) return Promise.resolve(true);
+    return choose('Save the settings?', ['You changed the settings but did not save them.'],
+      [{ label: "Don't save", value: 'discard', cls: 'plain' }, { label: 'Save', value: 'save' }]).then(function (v) {
+      if (v === 'discard') { settingsDraft = null; return true; }
+      if (v !== 'save') return false;
+      busy = true; flash = null;
+      return call('saveSettings', [settingsArgs(settingsDraft)]).then(function (d) {
+        busy = false; C = d.state; settingsDraft = null; flash = { ok: 'Settings saved.' }; refreshClasses(); return true;
+      }).catch(function (e) { fail(e); return false; });
+    });
+  }
+  window.addEventListener('beforeunload', function (ev) { if (settingsDirty()) { ev.preventDefault(); ev.returnValue = ''; } });
 
   /** Who set a group's current claim: 'group', 'instructor', or '' when none. Old groups without the field count as the group's. */
   function claimBy(g, field) { return g[field] === '' ? '' : (g[field + 'By'] === 'instructor' ? 'instructor' : 'group'); }
@@ -294,7 +328,10 @@
     var copyIn = select([['', 'Standard catalog']].concat(classes.map(function (c) { return [c.key, 'Catalog and limits of ' + c.key]; })), '', function () {});
     top.appendChild(el('div', { class: 'row' }, el('b', { text: 'Class:' }),
       classes.length ? select(classes.map(function (c) { return [c.key, c.title + ' (' + c.key + ')']; }), cur,
-        function (v) { setClass(v); flash = null; loadClass(); }) : el('span', { class: 'muted', text: 'No class exists yet.' }),
+        function (v) {
+          flash = null;
+          leaveSettings().then(function (go) { if (!go) { render(); return; } settingsDraft = null; setClass(v); loadClass(); });
+        }) : el('span', { class: 'muted', text: 'No class exists yet.' }),
       cur ? button('Refresh', 'plain', function () { flash = null; loadClass(); }) : null));
     top.appendChild(el('div', { class: 'row' }, el('span', { class: 'muted', text: 'New class:' }), keyIn, titleIn, copyIn,
       button('Create', 'plain', function () {
@@ -309,9 +346,13 @@
     var tabs = el('div', { class: 'tabs' });
     TABS.forEach(function (t) {
       tabs.appendChild(el('button', { text: t, class: 'tab' + (t === tab ? ' on' : ''), on: { click: function () {
-        tab = t; flash = null; render();
-        if (t === 'Log' && !logRows) loadLog();
-        if (t === 'History' && !snapRows) loadSnapshots();
+        flash = null;
+        leaveSettings().then(function (go) {
+          if (!go) return;
+          tab = t; render();
+          if (t === 'Log' && !logRows) loadLog();
+          if (t === 'History' && !snapRows) loadSnapshots();
+        });
       } } }));
     });
     app.appendChild(tabs);
@@ -322,14 +363,19 @@
   }
 
   function overview(card) {
-    var s = C.settings;
+    var v = settingsDraft || settingsOf(C.settings);
     var f = {
-      title: el('input', { type: 'text', value: s.title, size: 40 }),
-      deadline: el('input', { type: 'datetime-local', value: localValue(s.deadline) }),
-      maxSize: el('input', { type: 'number', min: 1, value: s.maxSize, style: 'width:70px' }),
-      minToClaim: el('input', { type: 'number', min: 1, value: s.minToClaim, style: 'width:70px' }),
-      maxGroups: el('input', { type: 'number', min: 1, value: s.maxGroups, style: 'width:70px' })
+      title: el('input', { type: 'text', value: v.title, size: 40 }),
+      deadline: el('input', { type: 'datetime-local', value: v.deadline }),
+      maxSize: el('input', { type: 'number', min: 1, value: v.maxSize, style: 'width:70px' }),
+      minToClaim: el('input', { type: 'number', min: 1, value: v.minToClaim, style: 'width:70px' }),
+      maxGroups: el('input', { type: 'number', min: 1, value: v.maxGroups, style: 'width:70px' })
     };
+    var form = function () { return { title: f.title.value, deadline: f.deadline.value, maxSize: f.maxSize.value, minToClaim: f.minToClaim.value, maxGroups: f.maxGroups.value }; };
+    var note = el('span', { class: 'muted', style: 'margin-left:8px', text: settingsDirty() ? 'Unsaved changes.' : '' });
+    // Every edit updates the draft, so the form survives redraws and the tab-change check sees it.
+    var edited = function () { settingsDraft = form(); note.textContent = settingsDirty() ? 'Unsaved changes.' : ''; };
+    Object.keys(f).forEach(function (k) { f[k].addEventListener('input', edited); f[k].addEventListener('change', edited); });
     var link = studentLink();
     card.appendChild(el('h2', { text: 'Settings' }));
     card.appendChild(el('dl', {},
@@ -339,10 +385,13 @@
       el('dt', { text: 'Maximum group size' }), el('dd', {}, f.maxSize, el('span', { class: 'muted', text: ' the group creator plus the students the creator approves' })),
       el('dt', { text: 'Minimum members to claim' }), el('dd', {}, f.minToClaim),
       el('dt', { text: 'Maximum number of groups' }), el('dd', {}, f.maxGroups, el('span', { class: 'muted', text: ' students are not shown this number' }))));
-    card.appendChild(button('Save settings', '', function () {
-      run('saveSettings', [{ title: f.title.value, deadline: f.deadline.value ? new Date(f.deadline.value).toISOString() : '',
-        maxSize: f.maxSize.value, minToClaim: f.minToClaim.value, maxGroups: f.maxGroups.value }], 'Settings saved.');
-    }));
+    card.appendChild(el('div', {}, button('Save settings', '', function () {
+      settingsDraft = form();
+      busy = true; flash = null;
+      call('saveSettings', [settingsArgs(settingsDraft)]).then(function (d) {
+        busy = false; C = d.state; settingsDraft = null; flash = { ok: 'Settings saved.' }; render(); refreshClasses();
+      }).catch(fail);  // on a refused save the draft stays, so the form keeps the edits
+    }), note));
 
     var inGroup = C.roster.filter(function (r) { return r.group; }).length;
     card.appendChild(el('h2', { style: 'margin-top:22px', text: 'Status' }));

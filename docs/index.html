@@ -41,6 +41,18 @@
     .tag.free { color: var(--ok); }
     .tag.yours { color: var(--accent); }
     .tag.todo { color: #8a5a00; }
+    .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin: 4px 0 12px; }
+    .tile { display: block; width: 100%; text-align: left; border: 0; border-radius: 10px; padding: 14px 16px;
+            color: #fff; font: inherit; cursor: pointer; box-shadow: 0 2px 6px rgba(0, 0, 0, .15); }
+    .tile small { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; opacity: .85; margin-bottom: 4px; }
+    .tile b { display: block; font-size: 16px; line-height: 1.3; }
+    .tile span { display: block; font-size: 13px; opacity: .9; margin-top: 4px; }
+    .tile.dataset { background: linear-gradient(135deg, #0b5cad, #2f86dc); }
+    .tile.topic { background: linear-gradient(135deg, #1a7f37, #3aa85a); }
+    .tile.todo { background: linear-gradient(135deg, #b36b00, #e69a1a); }
+    .tile.open { outline: 3px solid rgba(0, 0, 0, .2); }
+    .detail { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: -4px 0 12px; background: #fafbfc; word-break: break-word; }
+    button.switch { background: var(--warn); border-color: var(--warn); color: #fff; }
     .group .line { font-size: 13px; margin-top: 3px; }
     .group .line span { color: var(--muted); }
     button { font: inherit; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--accent);
@@ -78,6 +90,7 @@
   var conf = null, token = '', S = null, note = '';
   var busy = false, flash = null, asking = false, ownLink = '', viewAs = '';
   var page = 'home';  // 'home', 'datasets', or 'topics'
+  var expanded = '';  // which tile on the group card is open: 'dataset', 'topic', or ''
   try { token = sessionStorage.getItem(TOKEN_KEY) || ''; } catch (e) {}
 
   // ---------------------------------------------------------------- plumbing
@@ -272,7 +285,7 @@
       ' · ', signOutLink));
     if (S.admin && S.roster) {
       var pick = el('select', { on: { change: function (ev) {
-        viewAs = ev.target.value; ownLink = ''; flash = null; page = 'home'; load(false);
+        viewAs = ev.target.value; ownLink = ''; flash = null; page = 'home'; expanded = ''; load(false);
       } } }, el('option', { value: '', text: 'My own account' }));
       S.roster.forEach(function (r) {
         pick.appendChild(el('option', { value: r.email, text: r.name + ' (' + r.email + ')', selected: r.email === viewAs }));
@@ -333,21 +346,39 @@
               function () { send('removeMember', [m.email], m.name + ' was removed.'); }, true));
           }
         });
-        // One row per task: what is claimed, and the button that opens the list.
-        var taskRow = function (have, label, p, by) {
-          var dd = el('dd', {});
-          dd.appendChild(el('span', { class: have ? '' : 'tag todo', text: have ? label : 'Not claimed yet' }));
-          if (have && by === 'instructor') dd.appendChild(el('span', { class: 'muted', text: ' (set by the instructor)' }));
-          dd.appendChild(document.createTextNode(' '));
-          if (canClaim) dd.appendChild(el('button', { class: have ? 'plain' : '', text: have ? 'Change' : 'Choose', on: { click: open(p) } }));
-          else dd.appendChild(el('button', { class: 'link', text: 'view list', on: { click: open(p) } }));
-          return dd;
-        };
         card.appendChild(el('dl', {},
           el('dt', { text: 'Group' }), el('dd', { text: my.name }),
-          el('dt', { text: 'Members' }), el('dd', {}, members),
-          el('dt', { text: 'Dataset' }), taskRow(!!d, d ? d.name + (my.ownLink ? ' (' + my.ownLink + ')' : '') : '', 'datasets', my.datasetBy),
-          el('dt', { text: 'Topic' }), taskRow(!!t, t ? t.topic : '', 'topics', my.topicBy)));
+          el('dt', { text: 'Members' }), el('dd', {}, members)));
+
+        // Two tiles, one per task. A claimed tile expands to its details and a switch button; an unclaimed one opens the list.
+        var tile = function (kind, have, label, p) {
+          if (!have) return el('button', { class: 'tile todo', on: { click: open(p) } },
+            el('small', { text: kind }), el('b', { text: 'Not claimed yet' }),
+            el('span', { text: canClaim ? 'Click to choose' : me.leader ? 'Your leader claims it once the group has ' + S.minToClaim + ' members' : 'Your leader claims it' }));
+          return el('button', { class: 'tile ' + kind + (expanded === kind ? ' open' : ''),
+            on: { click: function () { expanded = expanded === kind ? '' : kind; render(); } } },
+            el('small', { text: kind + (expanded === kind ? ' ▴' : ' ▾') }), el('b', { text: label }));
+        };
+        card.appendChild(el('div', { class: 'tiles' },
+          tile('dataset', !!d, d ? d.name : '', 'datasets'),
+          tile('topic', !!t, t ? t.topic : '', 'topics')));
+        if (expanded === 'dataset' && d) {
+          var box = el('div', { class: 'detail' });
+          var url = my.ownLink || (d.own ? '' : d.link);
+          if (url) box.appendChild(el('p', {}, el('a', { href: url, target: '_blank', rel: 'noopener', text: url })));
+          else box.appendChild(el('p', { class: 'muted', text: 'No link is on file for this dataset.' }));
+          if (my.datasetBy === 'instructor') box.appendChild(el('p', { class: 'muted', text: 'Set by the instructor.' }));
+          if (canClaim) box.appendChild(el('button', { class: 'switch', text: 'Want to switch to another dataset?', on: { click: open('datasets') } }));
+          else box.appendChild(el('p', { class: 'muted', text: 'Only the leader, ' + my.leader + ', can switch it.' }));
+          card.appendChild(box);
+        }
+        if (expanded === 'topic' && t) {
+          var tbox = el('div', { class: 'detail' }, el('p', { text: t.description || 'No description.' }));
+          if (my.topicBy === 'instructor') tbox.appendChild(el('p', { class: 'muted', text: 'Set by the instructor.' }));
+          if (canClaim) tbox.appendChild(el('button', { class: 'switch', text: 'Want to switch to another topic?', on: { click: open('topics') } }));
+          else tbox.appendChild(el('p', { class: 'muted', text: 'Only the leader, ' + my.leader + ', can switch it.' }));
+          card.appendChild(tbox);
+        }
 
         if (me.leader) {
           card.appendChild(el('h3', { text: 'Requests to join' }));
@@ -368,8 +399,6 @@
             card.appendChild(el('div', { class: 'banner note', text: 'Your group needs at least ' + S.minToClaim +
               ' members before you can claim a dataset and a topic.' }));
           }
-        } else {
-          card.appendChild(el('p', { class: 'muted', text: 'Only the group leader can claim or change the dataset and topic.' }));
         }
 
         if (canAct) {
@@ -385,8 +414,8 @@
       app.appendChild(card);
     }
 
-    // ---- all groups
-    if (page === 'home') {
+    // ---- all groups (not shown to a student who is in a group: the card above says it all)
+    if (page === 'home' && !my) {
     var gcard = el('div', { class: 'card' }, el('h2', { text: 'Groups' }));
     if (!S.groups.length) gcard.appendChild(el('p', { class: 'muted', text: 'No group exists yet.' }));
     var grid = el('div', { class: 'grid' });

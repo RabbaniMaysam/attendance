@@ -6,7 +6,8 @@
  * State of a class:
  *   settings {title, deadline (ISO text or ''), maxSize, minToClaim, maxGroups}
  *   roster   [{first, last, email, group, joinedAt}]
- *   groups   [{name, leader, createdAt, dataset, ownLink, datasetAt, topic, topicAt}]
+ *   groups   [{name, leader, createdAt, dataset, ownLink, datasetAt, datasetBy, topic, topicAt, topicBy}]
+ *            datasetBy/topicBy: 'group' when the leader claimed it, 'instructor' when set on the instructor page
  *   requests [{time, email, group, status, decidedAt}]
  *   datasets [{code, name, link, own, reserved}]
  *   topics   [{code, topic, description}]
@@ -61,7 +62,7 @@ function newGroup(s, leader, now) {
   let n = 1;
   while (group(s, 'Group ' + n)) n++;
   const name = 'Group ' + n;
-  s.groups.push({ name: name, leader: leader.email, createdAt: now, dataset: '', ownLink: '', datasetAt: '', topic: '', topicAt: '' });
+  s.groups.push({ name: name, leader: leader.email, createdAt: now, dataset: '', ownLink: '', datasetAt: '', datasetBy: '', topic: '', topicAt: '', topicBy: '' });
   setMember(leader, name, now);
   return name;
 }
@@ -182,7 +183,7 @@ const ACTIONS = {
       const holder = c.s.groups.find(x => x.dataset === d.code && x !== g);
       if (holder) throw new Error('"' + d.name + '" was just claimed by ' + holder.name + '. Choose another dataset.');
     }
-    g.dataset = d.code; g.ownLink = link; g.datasetAt = c.now;
+    g.dataset = d.code; g.ownLink = link; g.datasetAt = c.now; g.datasetBy = 'group';
     c.log('claim dataset', g.name + ': ' + d.code + ' ' + d.name + (link ? ' ' + link : ''));
   },
 
@@ -192,7 +193,7 @@ const ACTIONS = {
     if (!t) throw new Error('That topic does not exist.');
     const holder = c.s.groups.find(x => x.topic === t.code && x !== g);
     if (holder) throw new Error('"' + t.topic + '" was just claimed by ' + holder.name + '. Choose another topic.');
-    g.topic = t.code; g.topicAt = c.now;
+    g.topic = t.code; g.topicAt = c.now; g.topicBy = 'group';
     c.log('claim topic', g.name + ': ' + t.code + ' ' + t.topic);
   }
 };
@@ -407,13 +408,17 @@ const ADMIN = {
       if (code && !d) throw new Error('That dataset does not exist.');
       const holder = d && !d.own && c.s.groups.find(x => x.dataset === code && x !== g);
       if (holder) throw new Error('"' + d.name + '" is claimed by ' + holder.name + '. Release it there first.');
+      if (code === g.dataset && (d && d.own ? text(ownLink) : '') === g.ownLink) return;
       g.dataset = code; g.ownLink = d && d.own ? text(ownLink) : ''; g.datasetAt = code ? c.now : '';
+      g.datasetBy = code ? 'instructor' : '';
     } else if (kind === 'topic') {
       const t = c.s.topics.find(x => x.code === code);
       if (code && !t) throw new Error('That topic does not exist.');
       const holder = t && c.s.groups.find(x => x.topic === code && x !== g);
       if (holder) throw new Error('"' + t.topic + '" is claimed by ' + holder.name + '. Release it there first.');
+      if (code === g.topic) return;
       g.topic = code; g.topicAt = code ? c.now : '';
+      g.topicBy = code ? 'instructor' : '';
     } else throw new Error('Unknown claim type.');
     c.log('set ' + kind, g.name + ': ' + (code || 'released') + (kind === 'dataset' && g.ownLink ? ' ' + g.ownLink : ''));
   },

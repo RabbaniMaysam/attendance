@@ -134,8 +134,14 @@ throws(() => adm('setClaim', 'Group 1', 'topic', '7'), /claimed by Group 2/, 'in
 adm('setClaim', 'Group 1', 'topic', '9');
 adm('setClaim', 'Group 2', 'dataset', '');
 ok(grp('Group 1').topic === '9' && grp('Group 2').dataset === '', 'instructor assigns and releases claims');
+ok(grp('Group 2').topicBy === 'group' && grp('Group 1').topicBy === 'instructor' && grp('Group 2').datasetBy === '', 'claims record who set them');
+const nLogs = logs.length;
+adm('setClaim', 'Group 1', 'topic', '9');
+ok(logs.length === nLogs, 'unchanged instructor claim is not logged');
 adm('moveStudent', m('b'), 'Group 1');
 ok(state('b').me.group === 'Group 1' && state('a').requests.length === 0, 'instructor moves a student; the request is closed');
+act1('a', 'claimTopic', 10);
+ok(grp('Group 1').topicBy === 'group' && grp('Group 1').topic === '10', 'a group claim after an instructor claim is the group\'s again');
 throws(() => adm('setLeader', 'Group 1', m('c')), /must be a member/, 'leader must be a member');
 adm('setLeader', 'Group 1', m('b'));
 ok(state('b').me.leader && !state('a').me.leader, 'instructor changes the leader');

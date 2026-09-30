@@ -43,7 +43,7 @@
     button { font: inherit; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--accent);
              background: var(--accent); color: #fff; cursor: pointer; }
     button.plain { background: #fff; color: var(--accent); }
-    button.armed { background: var(--warn); border-color: var(--warn); color: #fff; }
+    button.danger { background: var(--warn); border-color: var(--warn); color: #fff; }
     button.link { border: 0; background: none; color: var(--accent); padding: 0; text-decoration: underline; }
     button:disabled { opacity: .5; cursor: default; }
     input[type=url], select { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; }
@@ -52,6 +52,13 @@
     dt { color: var(--muted); }
     dd { margin: 0; }
     #signin { margin-top: 16px; }
+    .veil { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); display: flex; align-items: center;
+            justify-content: center; padding: 16px; z-index: 10; }
+    .modal { background: #fff; border-radius: 10px; padding: 20px; width: 100%; max-width: 460px;
+             box-shadow: 0 10px 40px rgba(0, 0, 0, .3); }
+    .modal h2 { margin-bottom: 8px; }
+    .modal p { margin: 0 0 8px; }
+    .modal .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
     @media (max-width: 600px) { td.act { white-space: normal; } }
   </style>
 </head>
@@ -66,7 +73,7 @@
   var classKey = new URLSearchParams(location.search).get('c') || '';
   var TOKEN_KEY = 'signup_token';
   var conf = null, token = '', S = null, note = '';
-  var busy = false, flash = null, armed = null, ownLink = '', viewAs = '';
+  var busy = false, flash = null, asking = false, ownLink = '', viewAs = '';
   try { token = sessionStorage.getItem(TOKEN_KEY) || ''; } catch (e) {}
 
   // ---------------------------------------------------------------- plumbing
@@ -114,7 +121,7 @@
   }
 
   function send(action, args, okText) {
-    busy = true; flash = null; armed = null; render();
+    busy = true; flash = null; render();
     api(action, args).then(function (s) { busy = false; S = s; flash = { ok: okText }; render(); })
       .catch(function (e) {
         busy = false;
@@ -195,16 +202,35 @@
 
   // ---------------------------------------------------------------- rendering
 
-  /** A button that asks for a second click before an action that is hard to undo. */
-  function actionButton(id, label, needsConfirm, confirmLabel, run, plain) {
-    var isArmed = armed === id;
+  /** A confirmation pop-up. Resolves to true when the student confirms. */
+  function ask(title, lines, okLabel, danger) {
+    return new Promise(function (resolve) {
+      asking = true;
+      var veil;
+      var done = function (yes) { asking = false; veil.remove(); document.removeEventListener('keydown', onKey); resolve(yes); };
+      var onKey = function (ev) { if (ev.key === 'Escape') done(false); };
+      var box = el('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' }, el('h2', { text: title }));
+      lines.forEach(function (l) { box.appendChild(el('p', { text: l })); });
+      var ok = el('button', { text: okLabel, class: danger ? 'danger' : '', on: { click: function () { done(true); } } });
+      box.appendChild(el('div', { class: 'buttons' },
+        el('button', { class: 'plain', text: 'Cancel', on: { click: function () { done(false); } } }), ok));
+      veil = el('div', { class: 'veil', on: { click: function (ev) { if (ev.target === veil) done(false); } } }, box);
+      document.body.appendChild(veil);
+      document.addEventListener('keydown', onKey);
+      ok.focus();
+    });
+  }
+
+  /** A button that opens a confirmation pop-up before it acts. confirmSpec: null, or {title, lines, ok, danger}. */
+  function actionButton(label, confirmSpec, run, plain) {
     return el('button', {
-      text: isArmed ? confirmLabel : label,
-      class: isArmed ? 'armed' : (plain ? 'plain' : ''),
+      text: label,
+      class: plain ? 'plain' : '',
       disabled: busy || S.closed || !S.me,
       on: { click: function () {
-        if (needsConfirm && !isArmed) { armed = id; render(); return; }
-        run();
+        if (!confirmSpec) { run(); return; }
+        ask(confirmSpec.title, confirmSpec.lines, confirmSpec.ok || label, !!confirmSpec.danger)
+          .then(function (yes) { if (yes) run(); });
       } }
     });
   }
@@ -241,7 +267,7 @@
       ' · ', signOutLink));
     if (S.admin && S.roster) {
       var pick = el('select', { on: { change: function (ev) {
-        viewAs = ev.target.value; ownLink = ''; armed = null; flash = null; load(false);
+        viewAs = ev.target.value; ownLink = ''; flash = null; load(false);
       } } }, el('option', { value: '', text: 'My own account' }));
       S.roster.forEach(function (r) {
         pick.appendChild(el('option', { value: r.email, text: r.name + ' (' + r.email + ')', selected: r.email === viewAs }));
@@ -264,14 +290,18 @@
           var target = S.groups.filter(function (g) { return g.name === me.request; })[0];
           card.appendChild(el('p', { text: 'Your request to join ' + me.request + ' is waiting for approval by ' +
             (target ? target.leader : 'its leader') + '.' }));
-          if (canAct) card.appendChild(actionButton('cancel', 'Cancel request', false, '',
+          if (canAct) card.appendChild(actionButton('Cancel request',
+            { title: 'Withdraw your request?', lines: ['Your request to join ' + me.request + ' will be cancelled. You can ask again later.'], ok: 'Withdraw request', danger: true },
             function () { send('cancelRequest', [], 'Request cancelled.'); }, true));
         } else {
           card.appendChild(el('p', { text: 'You are not in a group. Create a new group, or ask to join one of the groups below.' }));
         }
         if (canAct && S.canCreate) {
           card.appendChild(document.createTextNode(' '));
-          card.appendChild(actionButton('create', 'Create a new group', !!me.request, 'Confirm: cancel request and create a group',
+          card.appendChild(actionButton('Create a new group',
+            { title: 'Create a new group?', ok: 'Create group', lines: [
+              'You become its leader: other students ask to join, and you approve or decline them.',
+              me.request ? 'Your request to join ' + me.request + ' will be cancelled.' : null].filter(Boolean) },
             function () { send('createGroup', [], 'Your group was created. You are its leader.'); }, false));
         }
       } else {
@@ -288,7 +318,8 @@
         my.members.forEach(function (m) {
           var li = el('li', {}, el('span', { text: m.name }));
           if (canAct && me.leader && m.email && m.email !== S.email) {
-            li.appendChild(actionButton('rm:' + m.email, 'Remove', true, 'Confirm: remove ' + m.name,
+            li.appendChild(actionButton('Remove',
+              { title: 'Remove ' + m.name + ' from your group?', lines: [m.name + ' will be without a group and can ask to join again.'], danger: true },
               function () { send('removeMember', [m.email], m.name + ' was removed.'); }, true));
           }
           ml.appendChild(li);
@@ -301,9 +332,12 @@
           var rl = el('ul', { class: 'plain' });
           S.requests.forEach(function (q) {
             rl.appendChild(el('li', {}, el('span', { text: q.name }),
-              actionButton('ap:' + q.email, 'Approve', false, '',
+              actionButton('Approve',
+                { title: 'Add ' + q.name + ' to your group?', lines: ['Your group will then have ' + (my.members.length + 1) + ' of at most ' + S.maxSize + ' members.',
+                  'As the leader, you can remove a member later.'] },
                 function () { send('decideRequest', [q.email, true], q.name + ' joined your group.'); }, false),
-              actionButton('de:' + q.email, 'Decline', true, 'Confirm: decline',
+              actionButton('Decline',
+                { title: 'Decline ' + q.name + '?', lines: [q.name + ' can ask to join another group.'], danger: true },
                 function () { send('decideRequest', [q.email, false], 'Request declined.'); }, true)));
           });
           if (S.requests.length) card.appendChild(rl);
@@ -317,8 +351,11 @@
 
         if (canAct) {
           var alone = my.members.length === 1;
-          card.appendChild(el('p', {}, actionButton('leave', 'Leave group', true,
-            alone ? 'Confirm: leave and delete the group' : 'Confirm: leave ' + my.name,
+          card.appendChild(el('p', {}, actionButton('Leave group',
+            { title: 'Leave ' + my.name + '?', ok: 'Leave group', danger: true, lines: [
+              alone ? 'You are its only member, so the group will be deleted and its dataset and topic released.'
+                : me.leader ? 'Another member becomes the leader. The group keeps its dataset and topic.'
+                : 'You will be without a group and can ask to join another one.'] },
             function () { send('leaveGroup', [], 'You left ' + my.name + '.'); }, true)));
         }
       }
@@ -339,7 +376,10 @@
       else if (g.full) box.appendChild(el('span', { class: 'muted', text: 'Full' }));
       else if (me && me.request === g.name) box.appendChild(el('span', { class: 'muted', text: 'Request sent' }));
       else if (canAct && !my) {
-        box.appendChild(actionButton('ask:' + g.name, 'Ask to join', !!me.request, 'Confirm: replace current request',
+        box.appendChild(actionButton('Ask to join',
+          { title: 'Ask to join ' + g.name + '?', ok: 'Send request', lines: [
+            'Its leader, ' + g.leader + ', approves or declines your request.',
+            me.request ? 'Your pending request to join ' + me.request + ' will be replaced.' : null].filter(Boolean) },
           function () { send('requestJoin', [g.name], 'Request sent to the leader of ' + g.name + '.'); }, true));
       }
       grid.appendChild(box);
@@ -369,10 +409,24 @@
       var act = el('td', { class: 'act' });
       if (canClaim && !d.reserved && !takenByOther && (!mine || d.own)) {
         var replacing = my.dataset !== '' && !mine;
-        act.appendChild(actionButton('d:' + d.code, mine ? 'Update link' : (replacing ? 'Switch' : 'Claim'),
-          replacing, 'Confirm: release current dataset',
-          function () { send('claimDataset', [d.code, input ? input.value : ''], 'Dataset saved: ' + d.name + '.'); },
-          replacing || mine));
+        var current = replacing ? byCode(S.datasets, my.dataset) : null;
+        var spec = function () {
+          var linkLine = input ? 'Link: ' + (input.value || '(none)') : null;
+          if (mine) return { title: 'Update the link of your dataset?', ok: 'Update link', lines: [linkLine] };
+          if (replacing) return { title: 'Switch to "' + d.name + '"?', ok: 'Switch dataset', danger: true, lines: [
+            'Your group currently holds "' + (current ? current.name : my.dataset) + '". Switching releases it, and another group may claim it right away.',
+            linkLine].filter(Boolean) };
+          return { title: 'Claim "' + d.name + '" for your group?', ok: 'Claim dataset', lines: [
+            d.own ? 'Every group may choose its own dataset.' : 'Only one group can hold this dataset.',
+            'You can switch until the deadline.', linkLine].filter(Boolean) };
+        };
+        var btn = actionButton(mine ? 'Update link' : (replacing ? 'Switch' : 'Claim'), null, function () {
+          var c = spec();
+          ask(c.title, c.lines, c.ok, !!c.danger).then(function (yes) {
+            if (yes) send('claimDataset', [d.code, input ? input.value : ''], 'Dataset saved: ' + d.name + '.');
+          });
+        }, replacing || mine);
+        act.appendChild(btn);
       }
       dt.appendChild(el('tr', { class: mine ? 'mine' : '' }, nameCell, el('td', {}, status), act));
     });
@@ -391,8 +445,12 @@
       var act = el('td', { class: 'act' });
       if (canClaim && !takenByOther && !mine) {
         var replacing = my.topic !== '';
-        act.appendChild(actionButton('t:' + t.code, replacing ? 'Switch' : 'Claim',
-          replacing, 'Confirm: release current topic',
+        var current = replacing ? byCode(S.topics, my.topic) : null;
+        act.appendChild(actionButton(replacing ? 'Switch' : 'Claim',
+          replacing ? { title: 'Switch to "' + t.topic + '"?', ok: 'Switch topic', danger: true, lines: [
+              'Your group currently holds "' + (current ? current.topic : my.topic) + '". Switching releases it, and another group may claim it right away.'] }
+            : { title: 'Claim "' + t.topic + '" for your group?', ok: 'Claim topic', lines: [
+              'Only one group can hold this topic. You can switch until the deadline.'] },
           function () { send('claimTopic', [t.code], 'Topic saved: ' + t.topic + '.'); }, replacing));
       }
       tt.appendChild(el('tr', { class: mine ? 'mine' : '' },
@@ -410,7 +468,7 @@
   setInterval(function () {
     var a = document.activeElement;
     var editing = a && (a.tagName === 'INPUT' || a.tagName === 'SELECT');
-    if (S && !busy && !armed && !editing && !document.hidden) load(true);
+    if (S && !busy && !asking && !editing && !document.hidden) load(true);
   }, 20000);
 </script>
 </body>

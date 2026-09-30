@@ -44,6 +44,19 @@
     dt { color: var(--muted); }
     dd { margin: 0; }
     code { background: #eef1f4; padding: 1px 5px; border-radius: 4px; }
+    /* A claim chosen by the group is green; one set here, on the instructor page, is yellow. */
+    .byGroup { background: #dff3e4; border-color: var(--ok); }
+    .forced { background: #fff0b3; border-color: #b58900; }
+    option.byGroup, option.forced { font-weight: 600; }
+    .swatch { display: inline-block; width: 14px; height: 14px; border: 1px solid var(--line); border-radius: 3px; vertical-align: -2px; }
+    .veil { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); display: flex; align-items: center;
+            justify-content: center; padding: 16px; z-index: 10; }
+    .modal { background: #fff; border-radius: 10px; padding: 20px; width: 100%; max-width: 480px;
+             box-shadow: 0 10px 40px rgba(0, 0, 0, .3); }
+    .modal h2 { margin-bottom: 8px; }
+    .modal p { margin: 0 0 8px; }
+    .modal .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+    button.danger.solid { background: var(--warn); color: #fff; }
   </style>
 </head>
 <body>
@@ -212,13 +225,39 @@
   function membersOf(name) { return C.roster.filter(function (r) { return r.group === name; }); }
   function studentLink() { return location.href.replace(/admin\.html.*$/, '') + '?c=' + encodeURIComponent(cur); }
 
-  function select(options, value, onChange) {
-    var s = el('select', { disabled: busy, on: { change: function (ev) { onChange(ev.target.value); } } });
-    options.forEach(function (o) { s.appendChild(el('option', { value: o[0], text: o[1], selected: o[0] === value, disabled: !!o[2] })); });
+  /** options: [value, label, disabled, class]. cls colors the select itself. */
+  function select(options, value, onChange, cls) {
+    var s = el('select', { class: cls || null, disabled: busy, on: { change: function (ev) { onChange(ev.target.value); } } });
+    options.forEach(function (o) {
+      s.appendChild(el('option', { value: o[0], text: o[1], selected: o[0] === value, disabled: !!o[2], class: o[3] || null }));
+    });
     return s;
   }
 
   function button(label, cls, fn) { return el('button', { text: label, class: cls, disabled: busy, on: { click: fn } }); }
+
+  /** A confirmation pop-up. Resolves to true when confirmed. */
+  function ask(title, lines, okLabel, danger) {
+    return new Promise(function (resolve) {
+      var veil;
+      var done = function (yes) { veil.remove(); document.removeEventListener('keydown', onKey); resolve(yes); };
+      var onKey = function (ev) { if (ev.key === 'Escape') done(false); };
+      var box = el('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' }, el('h2', { text: title }));
+      lines.forEach(function (l) { box.appendChild(el('p', { text: l })); });
+      var ok = el('button', { text: okLabel, class: danger ? 'danger solid' : '', on: { click: function () { done(true); } } });
+      box.appendChild(el('div', { class: 'buttons' },
+        el('button', { class: 'plain', text: 'Cancel', on: { click: function () { done(false); } } }), ok));
+      veil = el('div', { class: 'veil', on: { click: function (ev) { if (ev.target === veil) done(false); } } }, box);
+      document.body.appendChild(veil);
+      document.addEventListener('keydown', onKey);
+      ok.focus();
+    });
+  }
+
+  /** Who set a group's current claim: 'group', 'instructor', or '' when none. Old groups without the field count as the group's. */
+  function claimBy(g, field) { return g[field] === '' ? '' : (g[field + 'By'] === 'instructor' ? 'instructor' : 'group'); }
+  function claimClass(g, field) { return { group: 'byGroup', instructor: 'forced' }[claimBy(g, field)] || ''; }
+  function claimOrigin(g, field) { return claimBy(g, field) === 'instructor' ? 'set by you on this page' : 'chosen by the group'; }
 
   // ---------------------------------------------------------------- rendering
 
@@ -295,14 +334,14 @@
       C.groups.filter(function (g) { return g.topic !== ''; }).length + ' with a topic.' }));
     card.appendChild(el('div', { class: 'row' },
       button('Download groups (CSV)', 'plain', function () {
-        var rows = [['Group', 'Leader', 'Members', 'Member emails', 'Dataset code', 'Dataset', 'Own dataset link', 'Topic code', 'Topic']];
+        var rows = [['Group', 'Leader', 'Members', 'Member emails', 'Dataset code', 'Dataset', 'Own dataset link', 'Dataset set by', 'Topic code', 'Topic', 'Topic set by']];
         C.groups.forEach(function (g) {
           var ms = membersOf(g.name);
           var d = C.datasets.filter(function (x) { return x.code === g.dataset; })[0];
           var t = C.topics.filter(function (x) { return x.code === g.topic; })[0];
           var lead = ms.filter(function (r) { return r.email === g.leader; })[0];
           rows.push([g.name, lead ? fullName(lead) : g.leader, ms.map(fullName).join('; '), ms.map(function (r) { return r.email; }).join('; '),
-            g.dataset, d ? d.name : '', g.ownLink, g.topic, t ? t.topic : '']);
+            g.dataset, d ? d.name : '', g.ownLink, claimBy(g, 'dataset'), g.topic, t ? t.topic : '', claimBy(g, 'topic')]);
         });
         download(cur + '_groups.csv', rows);
       }),
@@ -347,11 +386,24 @@
     var t = el('table', {}, el('tr', {}, el('th', { text: 'Student' }), el('th', { text: 'Email' }), el('th', { text: 'Group' }), el('th', { text: 'Note' }), el('th', {})));
     C.roster.forEach(function (r) {
       var g = C.groups.filter(function (x) { return x.name === r.group; })[0];
+      var leads = !!g && g.leader === r.email;
       t.appendChild(el('tr', {}, el('td', { text: fullName(r) }), el('td', { text: r.email }),
-        el('td', {}, select(options, r.group, function (v) { run('moveStudent', [r.email, v], fullName(r) + ' moved.'); })),
-        el('td', { class: 'muted', text: g && g.leader === r.email ? 'Leader' : pending[r.email] ? 'Asked to join ' + pending[r.email] : '' }),
+        el('td', {}, select(options, r.group, function (v) {
+          if (v === r.group) return;
+          var lines = [];
+          if (r.group) lines.push(fullName(r) + ' leaves ' + r.group + (leads ? ', where ' + (membersOf(r.group).length > 1 ? 'another member becomes the leader' : 'no member remains, so the group is deleted and its claims released') : '') + '.');
+          lines.push(v === 'new' ? 'A new group is created with ' + fullName(r) + ' as its leader.'
+            : v ? fullName(r) + ' joins ' + v + ' as a member. The size limit does not apply to you.'
+            : fullName(r) + ' will be without a group.');
+          lines.push('The students involved are not notified.');
+          ask('Move ' + fullName(r) + '?', lines, 'Move', true).then(function (yes) {
+            if (yes) run('moveStudent', [r.email, v], fullName(r) + ' moved.'); else render();
+          });
+        })),
+        el('td', { class: 'muted', text: leads ? 'Leader' : pending[r.email] ? 'Asked to join ' + pending[r.email] : '' }),
         el('td', {}, button('Remove', 'danger', function () {
-          if (confirm('Remove ' + fullName(r) + ' from the class?')) run('removeStudent', [r.email], fullName(r) + ' removed.');
+          ask('Remove ' + fullName(r) + ' from the class?', [r.group ? 'They leave ' + r.group + ' as well.' : 'They are not in a group.', 'They can no longer sign in to this class.'],
+            'Remove student', true).then(function (yes) { if (yes) run('removeStudent', [r.email], fullName(r) + ' removed.'); });
         }))));
     });
     card.appendChild(t);
@@ -366,27 +418,61 @@
       var ms = membersOf(g.name);
       var held = function (field, code) { return C.groups.some(function (x) { return x !== g && x[field] === code; }); };
       var d = C.datasets.filter(function (x) { return x.code === g.dataset; })[0];
-      var dOpts = [['', 'None']].concat(C.datasets.map(function (x) { return [x.code, x.code + '. ' + x.name.slice(0, 50), !x.own && held('dataset', x.code)]; }));
-      var tOpts = [['', 'None']].concat(C.topics.map(function (x) { return [x.code, x.code + '. ' + x.topic.slice(0, 50), held('topic', x.code)]; }));
-      var dCell = el('td', {}, select(dOpts, g.dataset, function (v) {
-        var own = C.datasets.filter(function (x) { return x.code === v; })[0];
-        var link = own && own.own ? prompt('Web link of the dataset the group chose:', g.ownLink) : '';
-        if (link === null) { render(); return; }
-        run('setClaim', [g.name, 'dataset', v, link], 'Dataset saved for ' + g.name + '.');
+      var dOpts = [['', 'None']].concat(C.datasets.map(function (x) {
+        return [x.code, x.code + '. ' + x.name.slice(0, 50), !x.own && held('dataset', x.code), x.code === g.dataset ? claimClass(g, 'dataset') : ''];
       }));
+      var tOpts = [['', 'None']].concat(C.topics.map(function (x) {
+        return [x.code, x.code + '. ' + x.topic.slice(0, 50), held('topic', x.code), x.code === g.topic ? claimClass(g, 'topic') : ''];
+      }));
+      var lead = ms.filter(function (r) { return r.email === g.leader; })[0];
+      var leadName = lead ? fullName(lead) : g.leader;
+      var forceClaim = function (kind, items, labelOf, v, then) {
+        var cur = items.filter(function (x) { return x.code === g[kind]; })[0];
+        var next = items.filter(function (x) { return x.code === v; })[0];
+        var lines = [];
+        if (cur) lines.push('Current ' + kind + ': ' + cur.code + '. ' + labelOf(cur) + ' (' + claimOrigin(g, kind) + ').');
+        lines.push(next ? 'New ' + kind + ': ' + next.code + '. ' + labelOf(next) + '.' : 'The group will have no ' + kind + '.');
+        lines.push('This overrides the group\'s own choice; the leader, ' + leadName + ', is not notified. The change is logged and the group sees the new ' + kind + ' on its page.');
+        ask((next ? 'Force a change of ' + kind + ' for ' : 'Release the ' + kind + ' of ') + g.name + '?', lines,
+          next ? 'Change ' + kind : 'Release ' + kind, true).then(function (yes) { if (yes) then(next); else render(); });
+      };
+      var dCell = el('td', {}, select(dOpts, g.dataset, function (v) {
+        if (v === g.dataset) return;
+        forceClaim('dataset', C.datasets, function (x) { return x.name; }, v, function (next) {
+          var link = next && next.own ? prompt('Web link of the dataset the group chose:', g.ownLink) : '';
+          if (link === null) { render(); return; }
+          run('setClaim', [g.name, 'dataset', v, link], 'Dataset changed for ' + g.name + '.');
+        });
+      }, claimClass(g, 'dataset')));
       if (d && d.own) dCell.appendChild(el('div', { class: 'muted', text: g.ownLink || 'No link' }));
       t.appendChild(el('tr', {}, el('td', {}, el('b', { text: g.name }), el('div', { class: 'muted', text: 'created ' + when(g.createdAt) })),
         el('td', { text: ms.map(fullName).join(', ') }),
-        el('td', {}, select(ms.map(function (r) { return [r.email, fullName(r)]; }), g.leader,
-          function (v) { run('setLeader', [g.name, v], 'Leader changed for ' + g.name + '.'); })),
+        el('td', {}, select(ms.map(function (r) { return [r.email, fullName(r)]; }), g.leader, function (v) {
+          if (v === g.leader) return;
+          var who = ms.filter(function (r) { return r.email === v; })[0];
+          ask('Make ' + (who ? fullName(who) : v) + ' the leader of ' + g.name + '?',
+            ['The current leader is ' + leadName + '. Only the leader claims the dataset and topic and decides join requests.'],
+            'Change leader', true).then(function (yes) {
+              if (yes) run('setLeader', [g.name, v], 'Leader changed for ' + g.name + '.'); else render();
+            });
+        })),
         dCell,
-        el('td', {}, select(tOpts, g.topic, function (v) { run('setClaim', [g.name, 'topic', v], 'Topic saved for ' + g.name + '.'); })),
+        el('td', {}, select(tOpts, g.topic, function (v) {
+          if (v === g.topic) return;
+          forceClaim('topic', C.topics, function (x) { return x.topic; }, v, function () {
+            run('setClaim', [g.name, 'topic', v], 'Topic changed for ' + g.name + '.');
+          });
+        }, claimClass(g, 'topic'))),
         el('td', {}, button('Delete', 'danger', function () {
-          if (confirm('Delete ' + g.name + '? Its members stay on the roster without a group, and its claims are released.')) run('deleteGroup', [g.name], g.name + ' deleted.');
+          ask('Delete ' + g.name + '?', ['Its ' + ms.length + ' member(s) stay on the roster without a group. Its dataset and topic are released.'],
+            'Delete group', true).then(function (yes) { if (yes) run('deleteGroup', [g.name], g.name + ' deleted.'); });
         }))));
     });
     if (C.groups.length) card.appendChild(t);
-    card.appendChild(el('p', { class: 'muted', style: 'margin-top:10px', text: 'To move a student between groups, use the Roster tab. An item claimed by another group is greyed out: release it there first.' }));
+    card.appendChild(el('p', { class: 'muted', style: 'margin-top:10px' },
+      el('span', { class: 'swatch byGroup' }), ' chosen by the group   ', el('span', { class: 'swatch forced' }), ' set by you on this page. ',
+      'Groups normally choose for themselves; a change here overrides their choice after a confirmation. ',
+      'To move a student between groups, use the Roster tab. An item claimed by another group is greyed out: release it there first.'));
   }
 
   /** An editable catalog table. fields: [key, label, kind] with kind text, long, or check. */

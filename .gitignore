@@ -3,8 +3,10 @@
 *.xlsx
 !roster_template.csv
 
-# Google login credentials for clasp
+# Google login credentials for clasp, and the local link to each class's script project
 .clasprc.json
+.clasp*.json
+classes/
 
 node_modules/
 ~$*

@@ -3,7 +3,7 @@
 // [code, name, link, own choice, reserved]
 export const SEED_DATASETS = [
   [0,"Hospital readmission prediction dataset","https://www.kaggle.com/datasets/abhaypanchal/hospital-readmission-prediction-dataset","no","Instructor example"],
-  [1,"Diabetes","https://www.kaggle.com/datasets/uciml/pima-indians-diabetes-database","no",""],
+  [1,"Diabetes health indicators (CDC BRFSS 2015)","https://www.kaggle.com/datasets/alexteboul/diabetes-health-indicators-dataset","no",""],
   [2,"Heart 1","https://www.kaggle.com/datasets/andrewmvd/heart-failure-clinical-data","no",""],
   [3,"Heart 2","https://www.kaggle.com/datasets/fedesoriano/heart-failure-prediction","no",""],
   [4,"Maternal health risk data","https://www.kaggle.com/datasets/csafrit2/maternal-health-risk-data","no",""],

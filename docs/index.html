@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Group sign-up</title>
+  <script src="https://accounts.google.com/gsi/client" async></script>
+  <script src="config.js"></script>
+  <style>
+    :root { --ink: #1f2328; --muted: #5c6670; --line: #d8dde3; --bg: #f6f7f9; --card: #fff;
+            --accent: #0b5cad; --ok: #1a7f37; --warn: #b3261e; --mine: #eaf3ff; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink);
+           font: 15px/1.45 -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
+    main { max-width: 980px; margin: 0 auto; padding: 20px 16px 60px; }
+    h1 { font-size: 24px; margin: 0 0 4px; }
+    h2 { font-size: 18px; margin: 0 0 10px; }
+    h3 { font-size: 15px; margin: 14px 0 6px; }
+    p { margin: 0 0 10px; }
+    .muted { color: var(--muted); }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+            padding: 16px; margin-top: 16px; }
+    .banner { padding: 10px 14px; border-radius: 8px; margin-top: 12px; }
+    .banner.err { background: #fdecea; color: var(--warn); border: 1px solid #f3c1bc; }
+    .banner.ok { background: #e8f5ec; color: var(--ok); border: 1px solid #b9dfc4; }
+    .banner.note { background: #fff4d6; color: #6b4e00; border: 1px solid #ecd58f; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+    .group { border: 1px solid var(--line); border-radius: 6px; padding: 10px; }
+    .group.mine, tr.mine { background: var(--mine); }
+    .group b { display: block; margin-bottom: 4px; }
+    ul { margin: 0 0 8px; padding-left: 18px; }
+    ul.plain { list-style: none; padding-left: 0; }
+    ul.plain li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 0; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; vertical-align: top; padding: 8px; border-top: 1px solid var(--line); }
+    th { border-top: 0; font-size: 13px; color: var(--muted); font-weight: 600; }
+    td.act { white-space: nowrap; text-align: right; }
+    .desc { font-size: 13px; color: var(--muted); margin-top: 3px; }
+    .taken { color: var(--muted); }
+    .tag { font-size: 13px; font-weight: 600; }
+    .tag.free { color: var(--ok); }
+    .tag.yours { color: var(--accent); }
+    button { font: inherit; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--accent);
+             background: var(--accent); color: #fff; cursor: pointer; }
+    button.plain { background: #fff; color: var(--accent); }
+    button.armed { background: var(--warn); border-color: var(--warn); color: #fff; }
+    button.link { border: 0; background: none; color: var(--accent); padding: 0; text-decoration: underline; }
+    button:disabled { opacity: .5; cursor: default; }
+    input[type=url], select { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; }
+    input[type=url] { width: 100%; margin-top: 6px; }
+    dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 0 0 10px; }
+    dt { color: var(--muted); }
+    dd { margin: 0; }
+    #signin { margin-top: 16px; }
+    @media (max-width: 600px) { td.act { white-space: normal; } }
+  </style>
+</head>
+<body>
+<main>
+  <div id="app"><p class="muted">Loading...</p></div>
+  <div id="signin" hidden></div>
+</main>
+<script>
+  // The class is chosen by the link (?c=key). A site with one class needs no key.
+  var CLASSES = window.SIGNUP_CLASSES || [];
+  var classKey = new URLSearchParams(location.search).get('c') || '';
+  var chosen = CLASSES.filter(function (c) { return c.key === classKey; })[0] ||
+               (!classKey && CLASSES.length === 1 ? CLASSES[0] : null);
+  var API = chosen ? chosen.api : '';
+  var TOKEN_KEY = 'signup_token';
+  var conf = null, token = '', S = null;
+  var busy = false, flash = null, armed = null, ownLink = '', viewAs = '';
+  try { token = sessionStorage.getItem(TOKEN_KEY) || ''; } catch (e) {}
+
+  // ---------------------------------------------------------------- plumbing
+
+  function el(tag, attrs) {
+    var e = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) {
+      if (k === 'text') e.textContent = attrs[k];
+      else if (k === 'on') Object.keys(attrs.on).forEach(function (ev) { e.addEventListener(ev, attrs.on[ev]); });
+      else if (attrs[k] !== false && attrs[k] !== null) e.setAttribute(k, attrs[k] === true ? '' : attrs[k]);
+    });
+    for (var i = 2; i < arguments.length; i++) {
+      var kid = arguments[i];
+      if (kid === null || kid === undefined || kid === false) continue;
+      e.appendChild(typeof kid === 'string' ? document.createTextNode(kid) : kid);
+    }
+    return e;
+  }
+
+  function setToken(t) {
+    token = t || '';
+    try { token ? sessionStorage.setItem(TOKEN_KEY, token) : sessionStorage.removeItem(TOKEN_KEY); } catch (e) {}
+  }
+
+  /** Calls the backend. The body is sent as plain text so the browser makes no preflight request. */
+  function api(action, args) {
+    return fetch(API, { method: 'POST', body: JSON.stringify({ token: token, action: action, args: args || [], viewAs: viewAs }) })
+      .then(function (r) { return r.json(); })
+      .then(function (out) {
+        if (out.ok) return out.state;
+        if (out.error === 'SIGNIN') { setToken(''); S = null; showSignIn(); throw new Error('SIGNIN'); }
+        throw new Error(out.error);
+      });
+  }
+
+  function load(quiet) {
+    if (!token) return;
+    api('state').then(function (s) { S = s; if (!busy) render(); })
+      .catch(function (e) {
+        if (e.message === 'SIGNIN' || quiet) return;
+        flash = { err: 'The page could not load. ' + e.message }; render();
+      });
+  }
+
+  function send(action, args, okText) {
+    busy = true; flash = null; armed = null; render();
+    api(action, args).then(function (s) { busy = false; S = s; flash = { ok: okText }; render(); })
+      .catch(function (e) {
+        busy = false;
+        if (e.message === 'SIGNIN') return;
+        flash = { err: e.message }; render(); load(true);
+      });
+  }
+
+  // ---------------------------------------------------------------- sign-in
+
+  function whenGoogleReady(fn) {
+    if (window.google && google.accounts && google.accounts.id) fn();
+    else setTimeout(function () { whenGoogleReady(fn); }, 100);
+  }
+
+  function showSignIn() {
+    var app = document.getElementById('app');
+    var box = document.getElementById('signin');
+    app.innerHTML = '';
+    app.appendChild(el('h1', { text: conf.title }));
+    app.appendChild(el('p', { class: 'muted', text: 'Sign in with the Google account of the email address your instructor has on file.' }));
+    box.hidden = false;
+    box.innerHTML = '';
+    whenGoogleReady(function () {
+      google.accounts.id.renderButton(box, { theme: 'outline', size: 'large', text: 'signin_with' });
+    });
+  }
+
+  function signOut() {
+    setToken(''); S = null; viewAs = '';
+    whenGoogleReady(function () { google.accounts.id.disableAutoSelect(); });
+    showSignIn();
+  }
+
+  function boot() {
+    var app = document.getElementById('app');
+    if (!API) {
+      app.innerHTML = '';
+      app.appendChild(el('h1', { text: 'Group sign-up' }));
+      if (classKey) app.appendChild(el('div', { class: 'banner err', text: 'This link does not match any class. Check the link your instructor posted.' }));
+      else if (!CLASSES.length) app.appendChild(el('div', { class: 'banner err', text: 'No class is configured yet.' }));
+      else app.appendChild(el('p', { text: 'Choose your class:' }));
+      var list = el('ul');
+      if (!classKey) CLASSES.forEach(function (c) {
+        list.appendChild(el('li', {}, el('a', { href: '?c=' + encodeURIComponent(c.key), text: c.name || c.key })));
+      });
+      app.appendChild(list);
+      return;
+    }
+    fetch(API).then(function (r) { return r.json(); }).then(function (c) {
+      conf = c;
+      document.title = conf.title;
+      if (!conf.clientId) {
+        app.innerHTML = '';
+        app.appendChild(el('div', { class: 'banner err', text: 'Sign-in is not configured yet (the Settings sheet has no Google client ID).' }));
+        return;
+      }
+      whenGoogleReady(function () {
+        google.accounts.id.initialize({
+          client_id: conf.clientId,
+          callback: function (resp) {
+            setToken(resp.credential);
+            document.getElementById('signin').hidden = true;
+            flash = null; load(false);
+          }
+        });
+      });
+      if (token) load(false); else showSignIn();
+    }).catch(function () {
+      app.innerHTML = '';
+      app.appendChild(el('div', { class: 'banner err', text: 'The sign-up service did not respond. Reload the page in a minute.' }));
+    });
+  }
+
+  // ---------------------------------------------------------------- rendering
+
+  /** A button that asks for a second click before an action that is hard to undo. */
+  function actionButton(id, label, needsConfirm, confirmLabel, run, plain) {
+    var isArmed = armed === id;
+    return el('button', {
+      text: isArmed ? confirmLabel : label,
+      class: isArmed ? 'armed' : (plain ? 'plain' : ''),
+      disabled: busy || S.closed || !S.me,
+      on: { click: function () {
+        if (needsConfirm && !isArmed) { armed = id; render(); return; }
+        run();
+      } }
+    });
+  }
+
+  function render() {
+    var app = document.getElementById('app');
+    var keepScroll = window.scrollY;
+    app.innerHTML = '';
+    if (!S) { app.appendChild(el('p', { class: flash ? 'banner err' : 'muted', text: flash ? flash.err : 'Loading...' })); return; }
+    document.getElementById('signin').hidden = true;
+
+    var signOutLink = el('button', { class: 'link', text: 'Sign out', on: { click: signOut } });
+
+    if (!S.authorized) {
+      app.appendChild(el('h1', { text: conf.title }));
+      app.appendChild(el('div', { class: 'banner err',
+        text: 'The account ' + S.email + ' is not on the class roster. Sign in with the account of the email address your instructor has on file, or contact your instructor.' }));
+      app.appendChild(el('p', {}, signOutLink));
+      return;
+    }
+
+    var me = S.me;
+    var my = me ? S.groups.filter(function (g) { return g.name === me.group; })[0] : null;
+    var canAct = !!me && !S.closed;
+    var canClaim = canAct && !!my && me.leader && my.members.length >= S.minToClaim;
+    var byCode = function (list, code) { return list.filter(function (x) { return x.code === code; })[0]; };
+
+    // ---- header
+    app.appendChild(el('h1', { text: S.title }));
+    app.appendChild(el('div', { class: 'muted' },
+      S.preview ? 'Previewing as ' + (me ? me.name + ' (' + S.email + ')' : S.email + ', who is not on the roster')
+        : me ? 'Signed in as ' + me.name + ' (' + S.email + ')'
+        : 'Signed in as ' + S.email + ' (instructor view, read only)',
+      ' · ', signOutLink));
+    if (S.admin && S.roster) {
+      var pick = el('select', { on: { change: function (ev) {
+        viewAs = ev.target.value; ownLink = ''; armed = null; flash = null; load(false);
+      } } }, el('option', { value: '', text: 'My own account' }));
+      S.roster.forEach(function (r) {
+        pick.appendChild(el('option', { value: r.email, text: r.name + ' (' + r.email + ')', selected: r.email === viewAs }));
+      });
+      app.appendChild(el('div', { class: 'banner note' }, 'Instructor only. Preview and act as: ', pick));
+    }
+    if (S.deadlineText) {
+      app.appendChild(el('div', { class: 'banner ' + (S.closed ? 'note' : 'ok'), text: S.closed
+        ? 'Sign-up closed on ' + S.deadlineText + '. Contact your instructor for changes.'
+        : 'You may change your choices until ' + S.deadlineText + '.' }));
+    }
+    if (flash && flash.err) app.appendChild(el('div', { class: 'banner err', text: flash.err }));
+    if (flash && flash.ok) app.appendChild(el('div', { class: 'banner ok', text: flash.ok }));
+
+    // ---- my group
+    if (me) {
+      var card = el('div', { class: 'card' }, el('h2', { text: 'Your group' }));
+      if (!my) {
+        if (me.request) {
+          var target = S.groups.filter(function (g) { return g.name === me.request; })[0];
+          card.appendChild(el('p', { text: 'Your request to join ' + me.request + ' is waiting for approval by ' +
+            (target ? target.leader : 'its leader') + '.' }));
+          if (canAct) card.appendChild(actionButton('cancel', 'Cancel request', false, '',
+            function () { send('cancelRequest', [], 'Request cancelled.'); }, true));
+        } else {
+          card.appendChild(el('p', { text: 'You are not in a group. Create a new group, or ask to join one of the groups below.' }));
+        }
+        if (canAct && S.canCreate) {
+          card.appendChild(document.createTextNode(' '));
+          card.appendChild(actionButton('create', 'Create a new group', !!me.request, 'Confirm: cancel request and create a group',
+            function () { send('createGroup', [], 'Your group was created. You are its leader.'); }, false));
+        }
+      } else {
+        var d = my.dataset !== '' ? byCode(S.datasets, my.dataset) : null;
+        var t = my.topic !== '' ? byCode(S.topics, my.topic) : null;
+        card.appendChild(el('dl', {},
+          el('dt', { text: 'Group' }), el('dd', { text: my.name }),
+          el('dt', { text: 'Leader' }), el('dd', { text: my.leader + (me.leader ? ' (you)' : '') }),
+          el('dt', { text: 'Dataset' }), el('dd', { text: d ? d.name + (my.ownLink ? ' (' + my.ownLink + ')' : '') : 'Not claimed yet' }),
+          el('dt', { text: 'Topic' }), el('dd', { text: t ? t.topic : 'Not claimed yet' })));
+
+        card.appendChild(el('h3', { text: 'Members' }));
+        var ml = el('ul', { class: 'plain' });
+        my.members.forEach(function (m) {
+          var li = el('li', {}, el('span', { text: m.name }));
+          if (canAct && me.leader && m.email && m.email !== S.email) {
+            li.appendChild(actionButton('rm:' + m.email, 'Remove', true, 'Confirm: remove ' + m.name,
+              function () { send('removeMember', [m.email], m.name + ' was removed.'); }, true));
+          }
+          ml.appendChild(li);
+        });
+        card.appendChild(ml);
+
+        if (me.leader) {
+          card.appendChild(el('h3', { text: 'Requests to join' }));
+          if (!S.requests.length) card.appendChild(el('p', { class: 'muted', text: 'No requests are waiting.' }));
+          var rl = el('ul', { class: 'plain' });
+          S.requests.forEach(function (q) {
+            rl.appendChild(el('li', {}, el('span', { text: q.name }),
+              actionButton('ap:' + q.email, 'Approve', false, '',
+                function () { send('decideRequest', [q.email, true], q.name + ' joined your group.'); }, false),
+              actionButton('de:' + q.email, 'Decline', true, 'Confirm: decline',
+                function () { send('decideRequest', [q.email, false], 'Request declined.'); }, true)));
+          });
+          if (S.requests.length) card.appendChild(rl);
+          if (my.members.length < S.minToClaim) {
+            card.appendChild(el('div', { class: 'banner note', text: 'Your group needs at least ' + S.minToClaim +
+              ' members before you can claim a dataset and a topic.' }));
+          }
+        } else {
+          card.appendChild(el('p', { class: 'muted', text: 'Only the group leader can claim or change the dataset and topic.' }));
+        }
+
+        if (canAct) {
+          var alone = my.members.length === 1;
+          card.appendChild(el('p', {}, actionButton('leave', 'Leave group', true,
+            alone ? 'Confirm: leave and delete the group' : 'Confirm: leave ' + my.name,
+            function () { send('leaveGroup', [], 'You left ' + my.name + '.'); }, true)));
+        }
+      }
+      app.appendChild(card);
+    }
+
+    // ---- all groups
+    var gcard = el('div', { class: 'card' }, el('h2', { text: 'Groups' }));
+    if (!S.groups.length) gcard.appendChild(el('p', { class: 'muted', text: 'No group exists yet.' }));
+    var grid = el('div', { class: 'grid' });
+    S.groups.forEach(function (g) {
+      var mine = my && g.name === my.name;
+      var box = el('div', { class: 'group' + (mine ? ' mine' : '') }, el('b', { text: g.name }));
+      var ul = el('ul');
+      g.members.forEach(function (m) { ul.appendChild(el('li', { text: m.name + (m.name === g.leader ? ' (leader)' : '') })); });
+      box.appendChild(ul);
+      if (mine) box.appendChild(el('span', { class: 'tag yours', text: 'Your group' }));
+      else if (g.full) box.appendChild(el('span', { class: 'muted', text: 'Full' }));
+      else if (me && me.request === g.name) box.appendChild(el('span', { class: 'muted', text: 'Request sent' }));
+      else if (canAct && !my) {
+        box.appendChild(actionButton('ask:' + g.name, 'Ask to join', !!me.request, 'Confirm: replace current request',
+          function () { send('requestJoin', [g.name], 'Request sent to the leader of ' + g.name + '.'); }, true));
+      }
+      grid.appendChild(box);
+    });
+    gcard.appendChild(grid);
+    app.appendChild(gcard);
+
+    // ---- datasets
+    var dcard = el('div', { class: 'card' }, el('h2', { text: 'Datasets' }));
+    var dt = el('table', {}, el('tr', {}, el('th', { text: 'Dataset' }), el('th', { text: 'Status' }), el('th', {})));
+    S.datasets.forEach(function (d) {
+      var mine = my && my.dataset === d.code;
+      var takenByOther = !d.own && d.claimedBy.length && !mine;
+      var nameCell = el('td', {},
+        d.link && !d.own ? el('a', { href: d.link, target: '_blank', rel: 'noopener', text: d.name }) : el('span', { text: d.name }));
+      var input = null;
+      if (d.own && canClaim) {
+        input = el('input', { type: 'url', placeholder: 'Paste the Kaggle link of your dataset',
+          value: ownLink || (mine ? my.ownLink : ''),
+          on: { input: function (ev) { ownLink = ev.target.value; } } });
+        nameCell.appendChild(input);
+      }
+      var status = mine ? el('span', { class: 'tag yours', text: 'Your group' })
+        : d.reserved ? el('span', { class: 'taken', text: d.reserved })
+        : takenByOther ? el('span', { class: 'taken', text: 'Claimed by ' + d.claimedBy.join(', ') })
+        : el('span', { class: 'tag free', text: d.own ? 'Open to every group' : 'Available' });
+      var act = el('td', { class: 'act' });
+      if (canClaim && !d.reserved && !takenByOther && (!mine || d.own)) {
+        var replacing = my.dataset !== '' && !mine;
+        act.appendChild(actionButton('d:' + d.code, mine ? 'Update link' : (replacing ? 'Switch' : 'Claim'),
+          replacing, 'Confirm: release current dataset',
+          function () { send('claimDataset', [d.code, input ? input.value : ''], 'Dataset saved: ' + d.name + '.'); },
+          replacing || mine));
+      }
+      dt.appendChild(el('tr', { class: mine ? 'mine' : '' }, nameCell, el('td', {}, status), act));
+    });
+    dcard.appendChild(dt);
+    app.appendChild(dcard);
+
+    // ---- topics
+    var tcard = el('div', { class: 'card' }, el('h2', { text: 'Presentation topics' }));
+    var tt = el('table', {}, el('tr', {}, el('th', { text: 'Topic' }), el('th', { text: 'Status' }), el('th', {})));
+    S.topics.forEach(function (t) {
+      var mine = my && my.topic === t.code;
+      var takenByOther = t.claimedBy.length && !mine;
+      var status = mine ? el('span', { class: 'tag yours', text: 'Your group' })
+        : takenByOther ? el('span', { class: 'taken', text: 'Claimed by ' + t.claimedBy.join(', ') })
+        : el('span', { class: 'tag free', text: 'Available' });
+      var act = el('td', { class: 'act' });
+      if (canClaim && !takenByOther && !mine) {
+        var replacing = my.topic !== '';
+        act.appendChild(actionButton('t:' + t.code, replacing ? 'Switch' : 'Claim',
+          replacing, 'Confirm: release current topic',
+          function () { send('claimTopic', [t.code], 'Topic saved: ' + t.topic + '.'); }, replacing));
+      }
+      tt.appendChild(el('tr', { class: mine ? 'mine' : '' },
+        el('td', {}, el('div', { text: t.topic }), el('div', { class: 'desc', text: t.description })),
+        el('td', {}, status), act));
+    });
+    tcard.appendChild(tt);
+    app.appendChild(tcard);
+
+    window.scrollTo(0, keepScroll);
+  }
+
+  boot();
+  // Refresh every 20 seconds unless the student is typing, confirming, or choosing from a list.
+  setInterval(function () {
+    var a = document.activeElement;
+    var editing = a && (a.tagName === 'INPUT' || a.tagName === 'SELECT');
+    if (S && !busy && !armed && !editing && !document.hidden) load(true);
+  }, 20000);
+</script>
+</body>
+</html>

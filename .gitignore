@@ -1,0 +1,12 @@
+# Rosters and other student data never belong in this public repository
+*.csv
+*.xlsx
+!roster_template.csv
+
+# Google login credentials for clasp
+.clasprc.json
+
+node_modules/
+~$*
+Thumbs.db
+desktop.ini

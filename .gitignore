@@ -12,6 +12,9 @@ classes/
 .wrangler/
 .dev.vars
 
+# Database dumps (student data); they stay in Google Drive
+backup/data/
+
 node_modules/
 ~$*
 Thumbs.db

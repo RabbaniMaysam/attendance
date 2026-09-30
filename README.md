@@ -28,12 +28,16 @@ Only the accounts in the Worker's `ADMIN_EMAILS` secret can use it. Neither the 
 | Tab | Tasks |
 |---|---|
 | Overview | Student link, title, deadline, limits, downloads of the groups and the full log, delete the class |
-| Roster | Import a CSV (columns: first name, last name, email), add or remove one student, move a student to a group |
+| Roster | Import the roster (see Roster files), add or remove one student, move a student to a group |
 | Groups | Change the leader, assign or release a dataset or topic, delete a group |
 | Datasets, Topics | Add, edit, or remove catalog items |
 | Log | Every sign-in, action, and refused attempt with its reason, time, and account |
 
 On the student page, an instructor account sees the whole board and can preview and act as any student. Preview actions are marked in the log.
+
+## Roster files
+
+Both tools import the same two layouts (`parseRoster` in `worker/src/rules.js`): the Canvas gradebook export, with a "Student" column ("Last, First") and a "SIS Login ID" column (the address before the @, completed with `@montclair.edu`; the "Points Possible" row and Canvas's test student are skipped), or a CSV with first name, last name, and email columns in any order. Addresses are lowercased, and `@mail.montclair.edu` is stored as `@montclair.edu`; a student may sign in with either form. The domain rule is the one line `canonEmail` in `rules.js`.
 
 ## Several classes
 
@@ -41,7 +45,7 @@ One backend serves every class. A class is created on the instructor page with a
 
 ## Attendance tool
 
-The same backend also serves a separate attendance tool: `docs/attendance.html` for students (link `attendance.html?c=key`) and `docs/attendance_admin.html` for the instructor. An attendance class has its own roster (CSV import, same format), weekly class days with an opening and a closing clock time (New York time; default Tuesday and Thursday, 7:50 to 8:01 am), optional first and last class days, holidays, and one-off windows ("Open attendance now for N minutes"). A student signs in and presses one button while a window is open; the mark is refused outside a window. The instructor page shows a students-by-dates grid (refreshed every 10 seconds), where any cell can be marked or cleared by hand, and downloads the grid as CSV. Rules are in `worker/src/attendance.js`; storage is the `att_classes` and `att_marks` tables.
+The same backend also serves a separate attendance tool: `docs/attendance.html` for students (link `attendance.html?c=key`) and `docs/attendance_admin.html` for the instructor. An attendance class has its own roster (same import) and a list of sessions, each a date with an opening and a closing clock time (New York time). On the instructor page a green "+" beside a session adds one with the same times a week later, and "Open attendance now for N minutes" adds a session for today. A student signs in and presses one button while a session is open; the mark is refused otherwise. The instructor page shows a students-by-dates grid (refreshed every 10 seconds), where any cell can be marked or cleared by hand, and downloads the grid as CSV. Rules are in `worker/src/attendance.js`; storage is the `att_classes` and `att_marks` tables.
 
 ## Sign-in
 
@@ -63,6 +67,6 @@ Then write the Worker's address into `docs/config.js`.
 ## Tests
 
 - `node test/test_rules.mjs` checks the rules on an in-memory class.
-- `node test/test_attendance.mjs` checks the attendance windows (New York time, clock changes, holidays) and settings.
+- `node test/test_attendance.mjs` checks the attendance sessions (New York time, clock changes), roster import, and the student view.
 - `node test/test_worker.mjs` checks a local copy of the Worker end to end, including simultaneous claims of one item (its header lists the commands).
 - `node test/check_pages.mjs` checks that the page scripts parse.

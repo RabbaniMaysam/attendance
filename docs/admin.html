@@ -384,7 +384,7 @@
   function roster(card) {
     card.appendChild(el('h2', { text: 'Roster (' + C.roster.length + ')' }));
     var file = el('input', { type: 'file', accept: '.csv,text/csv' });
-    card.appendChild(el('div', { class: 'row' }, el('span', { text: 'Import a CSV with first name, last name, and email columns:' }), file,
+    card.appendChild(el('div', { class: 'row' }, el('span', { text: 'Import the Canvas gradebook export, or a CSV with first name, last name, and email columns:' }), file,
       button('Import', '', function () {
         if (!file.files.length) { flash = { err: 'Choose a CSV file first.' }; render(); return; }
         if (C.roster.length && !confirm('The file replaces the roster. Students in the file keep their group. Students missing from the file are removed from the class and from their group. Continue?')) return;

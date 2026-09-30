@@ -61,6 +61,9 @@
     .modal p { margin: 0 0 8px; }
     .modal .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
     button.danger.solid { background: var(--warn); color: #fff; }
+    button.add { background: var(--ok); border-color: var(--ok); width: 40px; height: 34px; padding: 0; font-size: 24px; line-height: 1; font-weight: 700; }
+    table.sessions { width: auto; }
+    table.sessions td { vertical-align: middle; }
   </style>
 </head>
 <body>
@@ -72,7 +75,6 @@
   var API = (window.SIGNUP_API || '').replace(/\/+$/, '');
   var TOKEN_KEY = 'signup_token';  // shared with the sign-up instructor page: one sign-in serves both
   var TZ = 'America/New_York';
-  var DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   var TABS = ['Attendance', 'Settings', 'Roster'];
   var token = '', me = '', classes = [], cur = '', D = null, tab = 'Attendance';
   var flash = null, busy = false, timer = null;
@@ -129,7 +131,7 @@
     call(action, args).then(function (d) {
       busy = false; D = d; flash = okText ? { ok: okText } : null;
       render();
-      if (action === 'saveSettings') refreshClasses();
+      if (action === 'saveTitle') refreshClasses();
     }).catch(fail);
   }
 
@@ -294,7 +296,7 @@
     var minutes = el('input', { type: 'number', min: 1, max: 600, value: 10, style: 'width:70px' });
     card.appendChild(el('div', { class: 'row' },
       button('Open attendance now', '', function () {
-        ask('Open attendance now for ' + minutes.value + ' minutes?', ['Students can mark themselves present until ' + minutes.value + ' minutes from now. This adds a one-off window for today (see Settings).'], 'Open now', false)
+        ask('Open attendance now for ' + minutes.value + ' minutes?', ['Students can mark themselves present until ' + minutes.value + ' minutes from now. This adds a session for today to the schedule (see Settings).'], 'Open now', false)
           .then(function (yes) { if (yes) run('openNow', [Number(minutes.value)], 'Attendance is open.'); });
       }), el('label', {}, 'for ', minutes, ' minutes'),
       el('span', { class: 'muted', text: '·' }),
@@ -335,48 +337,55 @@
     card.appendChild(el('div', { class: 'scroll' }, t));
     card.appendChild(el('p', { class: 'muted', style: 'margin-top:10px' },
       el('span', { class: 'swatch on' }), ' marked by the student during the window; ', el('span', { class: 'swatch inst' }),
-      ' set by you. Click any cell to mark or clear a student. Columns are the scheduled class days from the semester start through today, plus any day with a mark. The grid refreshes every 10 seconds.'));
+      ' set by you. Click any cell to mark or clear a student. Columns are the scheduled sessions through today, plus any day with a mark. The grid refreshes every 10 seconds.'));
   }
 
   // ---- Settings
-  function settings(card) {
-    var S = D.state, sch = S.schedule;
-    var title = el('input', { type: 'text', value: S.title, size: 40 });
-    var days = DAY_NAMES.map(function (name, i) {
-      var cb = el('input', { type: 'checkbox' }); cb.checked = sch.days.indexOf(i) !== -1;
-      return { i: i, cb: cb, label: el('label', {}, cb, name.slice(0, 3)) };
-    });
-    var open = el('input', { type: 'time', value: sch.open }), close = el('input', { type: 'time', value: sch.close });
-    var start = el('input', { type: 'date', value: sch.start || '' }), end = el('input', { type: 'date', value: sch.end || '' });
-    var skip = el('textarea', { value: S.skip.join('\n'), placeholder: '2026-11-26' });
-    card.appendChild(el('h2', { text: 'Schedule' }));
-    var dayRow = el('div', { class: 'row' }); days.forEach(function (d) { dayRow.appendChild(d.label); });
-    card.appendChild(el('dl', {},
-      el('dt', { text: 'Title' }), el('dd', {}, title),
-      el('dt', { text: 'Class days' }), el('dd', {}, dayRow),
-      el('dt', { text: 'Opens at' }), el('dd', {}, open, ' ', el('span', { class: 'muted', text: 'New York time' })),
-      el('dt', { text: 'Closes at' }), el('dd', {}, close),
-      el('dt', { text: 'First class day' }), el('dd', {}, start, ' ', el('span', { class: 'muted', text: 'optional; the grid starts here' })),
-      el('dt', { text: 'Last class day' }), el('dd', {}, end, ' ', el('span', { class: 'muted', text: 'optional; no windows after it' })),
-      el('dt', { text: 'No class on' }), el('dd', {}, skip, el('div', { class: 'muted', text: 'One date per line, YYYY-MM-DD (holidays, cancelled classes).' }))));
-    card.appendChild(el('div', { class: 'row' }, button('Save', '', function () {
-      run('saveSettings', [{ title: title.value, days: days.filter(function (d) { return d.cb.checked; }).map(function (d) { return d.i; }),
-        open: open.value, close: close.value, start: start.value, end: end.value, skip: skip.value }], 'Settings saved.');
-    })));
+  // The session list is edited in a draft (kept across redraws until saved) and sent whole with "Save schedule".
+  var draft = null, draftClass = '';
+  function plusDays(ymd, n) { var d = new Date(ymd + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
 
-    card.appendChild(el('h2', { text: 'One-off windows', style: 'margin-top:18px' }));
-    card.appendChild(el('p', { class: 'muted', text: 'A window on a date outside the weekly schedule (a moved class, or a window you opened with "Open attendance now").' }));
-    if (S.extra.length) {
-      var t = el('table', {}, el('tr', {}, el('th', { text: 'Date' }), el('th', { text: 'Opens' }), el('th', { text: 'Closes' }), el('th', {})));
-      S.extra.forEach(function (x) {
-        t.appendChild(el('tr', {}, el('td', { text: shortDate(x.date) + ' (' + x.date + ')' }), el('td', { text: clock(x.open) }), el('td', { text: clock(x.close) }),
-          el('td', {}, button('Remove', 'danger', function () { run('removeExtra', [x.date], 'Window removed.'); }))));
-      });
-      card.appendChild(t);
+  function settings(card) {
+    var S = D.state;
+    var title = el('input', { type: 'text', value: S.title, size: 40 });
+    card.appendChild(el('h2', { text: 'Title' }));
+    card.appendChild(el('div', { class: 'row' }, title, button('Save title', '', function () { run('saveTitle', [title.value], 'Title saved.'); })));
+
+    card.appendChild(el('h2', { text: 'Sessions', style: 'margin-top:18px' }));
+    card.appendChild(el('p', { class: 'muted', text: 'Each row is one date on which attendance opens and closes (New York time). The green + adds a row with the same times, one week later; change its date as needed. Nothing changes until you press "Save schedule".' }));
+    if (draftClass !== cur || !draft) { draft = S.sessions.map(function (x) { return { date: x.date, open: x.open, close: x.close }; }); draftClass = cur; }
+    var box = el('div', {});
+    function rowUi(x, i) {
+      var date = el('input', { type: 'date', value: x.date, on: { change: function () { x.date = date.value; } } });
+      var open = el('input', { type: 'time', value: x.open, on: { change: function () { x.open = open.value; } } });
+      var close = el('input', { type: 'time', value: x.close, on: { change: function () { x.close = close.value; } } });
+      return el('tr', {}, el('td', {}, date), el('td', {}, open), el('td', {}, close),
+        el('td', {}, el('button', { class: 'add', text: '+', title: 'Add a session with the same times', on: { click: function () {
+          draft.splice(i + 1, 0, { date: x.date ? plusDays(x.date, 7) : '', open: x.open, close: x.close }); drawRows();
+        } } })),
+        el('td', {}, button('Remove', 'danger', function () { draft.splice(i, 1); drawRows(); })));
     }
-    var xd = el('input', { type: 'date' }), xo = el('input', { type: 'time', value: sch.open }), xc = el('input', { type: 'time', value: sch.close });
-    card.appendChild(el('div', { class: 'row', style: 'margin-top:8px' }, xd, xo, ' to ', xc,
-      button('Add window', 'plain', function () { run('addExtra', [xd.value, xo.value, xc.value], 'Window added.'); })));
+    function drawRows() {
+      box.innerHTML = '';
+      if (draft.length) {
+        var t = el('table', { class: 'sessions' }, el('tr', {}, el('th', { text: 'Date' }), el('th', { text: 'Opens' }), el('th', { text: 'Closes' }), el('th', {}), el('th', {})));
+        draft.forEach(function (x, i) { t.appendChild(rowUi(x, i)); });
+        box.appendChild(t);
+      } else box.appendChild(el('p', { class: 'muted', text: 'No sessions yet.' }));
+      var changed = JSON.stringify(draft) !== JSON.stringify(S.sessions.map(function (x) { return { date: x.date, open: x.open, close: x.close }; }));
+      box.appendChild(el('div', { class: 'row', style: 'margin-top:10px' },
+        button('Add session', 'plain', function () {
+          var last = draft[draft.length - 1];
+          draft.push({ date: last && last.date ? plusDays(last.date, 7) : D.today, open: last ? last.open : '07:50', close: last ? last.close : '08:01' }); drawRows();
+        }),
+        button('Save schedule', '', function () {
+          busy = true; flash = null;
+          call('saveSessions', [draft]).then(function (d) { busy = false; D = d; draft = null; flash = { ok: 'Schedule saved.' }; render(); }).catch(fail);
+        }),
+        changed ? el('span', { class: 'muted', text: 'Unsaved changes.' }) : null));
+    }
+    drawRows();
+    card.appendChild(box);
 
     card.appendChild(el('h2', { text: 'Delete this class', style: 'margin-top:18px' }));
     var conf = el('input', { type: 'text', placeholder: 'type the class key: ' + cur, size: 30 });
@@ -394,7 +403,7 @@
     var S = D.state;
     card.appendChild(el('h2', { text: 'Roster (' + S.roster.length + ')' }));
     var file = el('input', { type: 'file', accept: '.csv,text/csv' });
-    card.appendChild(el('p', { class: 'muted', text: 'A CSV with a header row naming first name, last name, and email columns (any order; other columns are ignored). Importing replaces the roster; marks of students who are dropped are kept in the database but no longer shown.' }));
+    card.appendChild(el('p', { class: 'muted', text: 'The Canvas gradebook export ("Student" as "Last, First" and "SIS Login ID"; the Points Possible row and the test student are skipped), or a CSV with first name, last name, and email columns. Addresses at mail.montclair.edu are stored as montclair.edu; students may sign in with either. Importing replaces the roster; marks of students who are dropped are kept in the database but no longer shown.' }));
     card.appendChild(el('div', { class: 'row' }, file, button('Import', '', function () {
       if (!file.files.length) { flash = { err: 'Choose a CSV file first.' }; render(); return; }
       ask('Replace the roster?', ['The current ' + S.roster.length + ' students are replaced by the file\'s rows.'], 'Import', S.roster.length > 0).then(function (yes) {

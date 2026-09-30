@@ -133,16 +133,18 @@ ok(/not an instructor/.test((await post('/att/admin', { token: token(m(1)), clas
 r = await att('createClass', [AK, 'Attendance test'], '');
 ok(r.ok && r.data.key === AK && (await (await fetch(API + '/att/config')).json()).classes.some(c => c.key === AK), 'attendance class created and listed');
 r = await att('importRoster', ['first,last,email\nF1,L1,' + m(1) + '\nF2,L2,' + m(2)]);
-ok(r.ok && r.data.state.roster.length === 2 && r.data.state.schedule.open === '07:50', 'attendance roster imported, default schedule');
+ok(r.ok && r.data.state.roster.length === 2 && r.data.state.sessions.length === 0, 'attendance roster imported, no sessions yet');
 ok((await attStu(9, 'state')).state.authorized === false, 'account outside the attendance roster is blocked');
-// Closed: no day is scheduled, so the mark is refused.
-await att('saveSettings', [{ title: 'Attendance test', days: [], open: '07:50', close: '08:01', skip: '' }]);
+// Closed: nothing is scheduled, so the mark is refused.
+r = await att('saveSessions', [[{ date: '2099-01-05', open: '07:50', close: '08:01' }]]);
+ok(r.ok && r.data.state.sessions.length === 1 && r.data.next && r.data.next.date === '2099-01-05', 'a future session is saved and reported as next');
 r = await attStu(1, 'state');
-ok(r.ok && r.state.authorized && r.state.open === null && r.state.next === null, 'closed with nothing scheduled');
+ok(r.ok && r.state.authorized && r.state.open === null && r.state.next.date === '2099-01-05', 'closed with a future session');
 ok(/not open/.test((await attStu(1, 'mark')).error), 'mark refused while closed');
+ok(/after the open/.test((await att('saveSessions', [[{ date: '2099-01-05', open: '08:01', close: '07:50' }]])).error), 'bad session refused by the Worker');
 // Open now for 5 minutes, then the student marks; a second press changes nothing.
 r = await att('openNow', [5]);
-ok(r.ok && r.data.open && r.data.state.extra.length === 1, 'open now adds a window and reports open');
+ok(r.ok && r.data.open && r.data.state.sessions.length === 2, 'open now adds a session and reports open');
 r = await attStu(1, 'mark');
 ok(r.ok && r.state.marked && r.state.open, 'student marked present');
 const firstMark = r.state.marked;
@@ -154,8 +156,11 @@ r = await att('setMark', [r.data.today, m(2), true]);
 ok(r.data.marks.length === 2 && r.data.marks.find(x => x.email === m(2)).by === 'instructor', 'instructor marks a student');
 r = await att('setMark', [r.data.today, m(2), false]);
 ok(r.data.marks.length === 1, 'instructor clears a mark');
-r = await att('removeExtra', [r.data.today]);
-ok(r.data.open === null && (await attStu(2, 'state')).state.open === null, 'window removed: closed again');
+r = await att('saveSessions', [r.data.state.sessions.filter(x => x.date !== r.data.today)]);
+ok(r.ok && r.data.open === null && (await attStu(2, 'state')).state.open === null, 'session removed: closed again');
+r = await att('importRoster', ['Student,SIS Login ID\n"    Points Possible",\n"Student, Test",843b2ebf97d6dff55e1ba2ce8c7910f987d72b05\n"Doe, Jane",doej1']);
+ok(r.ok && r.data.state.roster.length === 1 && r.data.state.roster[0].email === 'doej1@montclair.edu' && r.data.state.roster[0].first === 'Jane', 'Canvas roster imported');
+ok((await post('/att', { token: token('doej1@mail.montclair.edu'), class: AK, action: 'state' })).state.authorized === true, 'mail.montclair.edu sign-in matches the montclair.edu roster');
 ok(/Type the class key/.test((await att('deleteClass', ['wrong'])).error), 'attendance delete needs the key typed');
 r = await att('deleteClass', [AK]);
 ok(r.ok && !r.data.classes.some(c => c.key === AK) && /does not match/.test((await att('get')).error), 'attendance class deleted');

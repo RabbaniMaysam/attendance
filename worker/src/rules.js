@@ -20,6 +20,8 @@ export const TZ = 'America/New_York';
 
 const norm = s => String(s ?? '').trim().toLowerCase();
 const text = s => String(s ?? '').trim();
+/** One spelling per student: Montclair's @mail.montclair.edu addresses are the same accounts as @montclair.edu. */
+export const canonEmail = s => norm(s).replace(/@mail\.montclair\.edu$/, '@montclair.edu');
 const fullName = r => (r.first + ' ' + r.last).trim();
 const num = (v, fallback) => { const n = Math.floor(Number(v)); return n > 0 ? n : fallback; };
 const byCode = (a, b) => (Number(a.code) - Number(b.code)) || String(a.code).localeCompare(String(b.code));
@@ -42,7 +44,7 @@ export function isClosed(s, now) {
 
 const group = (s, name) => s.groups.find(g => g.name === String(name));
 const members = (s, name) => s.roster.filter(r => r.group === String(name));
-const student = (s, email) => s.roster.find(r => r.email === norm(email));
+const student = (s, email) => s.roster.find(r => r.email === canonEmail(email));
 
 function setMember(st, name, now) {
   st.group = name;
@@ -145,7 +147,7 @@ const ACTIONS = {
 
   decideRequest(c, requesterEmail, approve) {
     const g = leaderGroup(c);
-    const who = norm(requesterEmail);
+    const who = canonEmail(requesterEmail);
     const mine = q => q.email === who && q.group === g.name;
     if (!c.s.requests.some(q => q.status === 'pending' && mine(q))) throw new Error('That request is no longer pending.');
     if (!approve) {
@@ -166,7 +168,7 @@ const ACTIONS = {
 
   removeMember(c, memberEmail) {
     const g = leaderGroup(c);
-    const who = norm(memberEmail);
+    const who = canonEmail(memberEmail);
     if (who === c.email) throw new Error('Use Leave to leave your own group.');
     const st = student(c.s, who);
     if (!st || st.group !== g.name) throw new Error('That student is not in ' + g.name + '.');
@@ -244,7 +246,7 @@ export function upgrade(s) {
 }
 
 /** The account a request acts for. Only an instructor may act for another roster email. */
-const acting = (real, viewAs, admin) => (admin && norm(viewAs) ? norm(viewAs) : real);
+const acting = (real, viewAs, admin) => (admin && canonEmail(viewAs) ? canonEmail(viewAs) : real);
 
 /**
  * Applies one student action to the state in place and returns its log lines.
@@ -350,6 +352,44 @@ export function parseCsv(csv) {
   return rows.filter(r => r.join('').trim() !== '');
 }
 
+/**
+ * Reads a roster CSV into [{first, last, email}] (deduplicated by email, in file order). Two layouts:
+ *   Canvas export: a "Student" column ("Last, First") and a "SIS Login ID" column (the part of the
+ *     Montclair address before the @). The "Points Possible" row and Canvas's test student are skipped.
+ *   Plain: first name, last name, and email columns in any order (extra columns are ignored).
+ */
+export function parseRoster(csv) {
+  const rows = parseCsv(csv);
+  if (rows.length < 2) throw new Error('The file has no student rows.');
+  const head = rows.shift().map(h => norm(h));
+  const col = re => head.findIndex(h => re.test(h));
+  const iStudent = col(/^student$/), iLogin = col(/login/);
+  const iFirst = col(/first/), iLast = col(/last|surname|family/), iMail = col(/mail/);
+  let read;
+  if (iStudent >= 0 && iLogin >= 0) {
+    read = r => {
+      const name = text(r[iStudent]), login = norm(r[iLogin]);
+      if (!login || norm(name) === 'student, test' || /^[0-9a-f]{32,}$/.test(login)) return null;  // Canvas test student, "Points Possible"
+      const m = /^([^,]*),(.*)$/.exec(name);
+      return { first: text(m ? m[2] : ''), last: text(m ? m[1] : name),
+               email: login.includes('@') ? canonEmail(login) : login + '@montclair.edu' };
+    };
+  } else if (iFirst >= 0 && iLast >= 0 && iMail >= 0) {
+    read = r => ({ first: text(r[iFirst]), last: text(r[iLast]), email: canonEmail(r[iMail]) });
+  } else {
+    throw new Error('The header row must have "Student" and "SIS Login ID" columns (Canvas export), or first name, last name, and email columns.');
+  }
+  const seen = {}, out = [];
+  rows.forEach(r => {
+    const st = read(r);
+    if (!st || !st.email || seen[st.email]) return;
+    seen[st.email] = true;
+    out.push(st);
+  });
+  if (!out.length) throw new Error('The file has no student rows.');
+  return out;
+}
+
 function dropStudent(c, st) {
   detach(c.s, st, c.now, c.log);
   closeRequests(c.s, q => q.email === st.email, 'cancelled', c.now);
@@ -370,29 +410,14 @@ const ADMIN = {
     c.log('save settings', JSON.stringify(c.s.settings));
   },
 
-  /**
-   * Replaces the roster with the CSV. Students who remain keep their group.
-   * The CSV needs a header row with first name, last name, and email columns
-   * (any order; extra columns are ignored).
-   */
+  /** Replaces the roster with the CSV (layouts: see parseRoster). Students who remain keep their group. */
   importRoster(c, csv) {
-    const rows = parseCsv(csv);
-    if (rows.length < 2) throw new Error('The file has no student rows.');
-    const head = rows.shift().map(h => norm(h));
-    const col = re => head.findIndex(h => re.test(h));
-    const iFirst = col(/first/), iLast = col(/last|surname|family/), iMail = col(/mail/);
-    if (iFirst < 0 || iLast < 0 || iMail < 0) {
-      throw new Error('The header row must name a first name, a last name, and an email column.');
-    }
     const seen = {};
-    const out = [];
-    rows.forEach(r => {
-      const email = norm(r[iMail]);
-      if (!email || seen[email]) return;
-      seen[email] = true;
-      const prev = student(c.s, email);
-      out.push({ first: text(r[iFirst]), last: text(r[iLast]), email: email,
-                 group: prev ? prev.group : '', joinedAt: prev ? prev.joinedAt : '' });
+    const out = parseRoster(csv).map(st => {
+      seen[st.email] = true;
+      const prev = student(c.s, st.email);
+      return { first: st.first, last: st.last, email: st.email,
+               group: prev ? prev.group : '', joinedAt: prev ? prev.joinedAt : '' };
     });
     const dropped = c.s.roster.filter(r => !seen[r.email]);
     dropped.forEach(st => dropStudent(c, st));
@@ -403,7 +428,7 @@ const ADMIN = {
   },
 
   addStudent(c, first, last, email) {
-    const mail = norm(email);
+    const mail = canonEmail(email);
     if (!/^\S+@\S+\.\S+$/.test(mail)) throw new Error('That email address is not valid.');
     if (student(c.s, mail)) throw new Error(mail + ' is on the roster.');
     c.s.roster.push({ first: text(first), last: text(last), email: mail, group: '', joinedAt: '' });

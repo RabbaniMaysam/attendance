@@ -192,5 +192,16 @@ adm('deleteGroup', 'Group 2');
 ok(S.groups.length === 0 && state('c').me.group === '' && state('e').me.request === '', 'instructor deletes a group');
 ok(!JSON.stringify(logs).includes('undefined') && logs.every(l => l.actor && l.action), 'log lines are complete');
 
+// Canvas gradebook export: "Last, First" names, login IDs instead of addresses, a "Points Possible" row, a test student.
+const canvas = 'Student,SIS Login ID,Assignment 1\n"    Points Possible",,10\n"Lafontaine Medina, Elian",lafontaineme1,\n"Student, Test",843b2ebf97d6dff55e1ba2ce8c7910f987d72b05,\n"Khan, Jubair",KhanJ6,\n"Doe, Jane",jane@mail.montclair.edu,\n"Khan, Jubair",khanj6,';
+adm('importRoster', canvas);
+ok(S.roster.length === 3 && S.roster[0].first === 'Elian' && S.roster[0].last === 'Lafontaine Medina' && S.roster[0].email === 'lafontaineme1@montclair.edu'
+  && S.roster[1].email === 'khanj6@montclair.edu' && S.roster[2].email === 'jane@montclair.edu',
+  'Canvas roster: names split, login IDs become montclair.edu addresses, test student and Points Possible skipped: ' + JSON.stringify(S.roster.map(r => r.email)));
+ok(view(S, 'KhanJ6@mail.montclair.edu', '', false, Date.now()).authorized && view(S, 'khanj6@montclair.edu', '', false, Date.now()).authorized,
+  'sign-in at either Montclair domain matches the roster');
+throws(() => adm('importRoster', 'Name,ID\nx,y'), /header row/, 'unknown roster layout refused');
+throws(() => adm('importRoster', 'Student,SIS Login ID\n"    Points Possible",\n"Student, Test",843b2ebf97d6dff55e1ba2ce8c7910f987d72b05'), /no student rows/, 'Canvas file with only the test student refused');
+
 console.log('passed', pass, 'failed', fail);
 process.exit(fail ? 1 : 0);

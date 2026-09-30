@@ -13,7 +13,7 @@
  * second is recomputed against the first one's result and refused.
  */
 
-import { act, view, adminAct, isAdminAction, newClass, upgrade } from './rules.js';
+import { act, view, adminAct, isAdminAction, newClass, upgrade, canonEmail } from './rules.js';
 import { SEED_DATASETS, SEED_TOPICS } from './seed.js';
 import * as att from './attendance.js';
 
@@ -107,7 +107,7 @@ async function verify(token, env) {
     const issuer = p.iss === 'accounts.google.com' || p.iss === 'https://accounts.google.com';
     const verified = p.email_verified === true || p.email_verified === 'true';
     if (!signed || !issuer || p.aud !== env.GOOGLE_CLIENT_ID || !verified || !(Number(p.exp) * 1000 > Date.now())) throw 0;
-    const email = String(p.email || '').trim().toLowerCase();
+    const email = canonEmail(p.email);
     if (!email) throw 0;
     return email;
   } catch (e) {
@@ -322,7 +322,7 @@ async function attAdminCall(env, real, action, key, args) {
     if (!/^[a-z0-9-]{2,30}$/.test(newKey)) throw new Error('The class key must be 2 to 30 lowercase letters, digits, or hyphens.');
     if (!title) throw new Error('The class needs a title.');
     const res = await env.DB.prepare('INSERT OR IGNORE INTO att_classes (key, state) VALUES (?, ?)')
-      .bind(newKey, JSON.stringify(att.newAttClass(title, now))).run();
+      .bind(newKey, JSON.stringify(att.newAttClass(title))).run();
     if (res.meta.changes !== 1) throw new Error('A class with the key "' + newKey + '" exists.');
     return { key: newKey, classes: await attClassList(env) };
   }
@@ -341,7 +341,7 @@ async function attAdminCall(env, real, action, key, args) {
 
   if (action === 'setMark') {
     // Instructor override: present (true) or absent (false) for one student on one date.
-    const date = String(args[0] || ''), email = String(args[1] || '').trim().toLowerCase();
+    const date = String(args[0] || ''), email = canonEmail(args[1]);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !email) throw new Error('A date and an email are needed.');
     if (args[2]) {
       await env.DB.prepare('INSERT OR REPLACE INTO att_marks (class, date, email, time, by) VALUES (?, ?, ?, ?, ?)')
@@ -351,7 +351,7 @@ async function attAdminCall(env, real, action, key, args) {
     }
   } else if (action === 'openNow') {
     const w = att.openNowWindow(now, args[0]);
-    att.ADMIN.addExtra(s, w.date, w.open, w.close);
+    att.ADMIN.addSession(s, w.date, w.open, w.close);
     await writeAtt(env, key, s);
   } else if (Object.prototype.hasOwnProperty.call(att.ADMIN, action)) {
     att.ADMIN[action](s, ...args);

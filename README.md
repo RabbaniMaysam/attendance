@@ -35,7 +35,13 @@ The limits, the deadline, and the instructor emails are cells in the Settings sh
 
 The Log sheet records every sign-in, every action, and every refused attempt with its reason, each with the time and the account.
 
-Accounts listed under "Instructor emails" see the whole board on the page and can preview and act as any student. Preview actions are marked in the log and send no emails.
+Accounts listed under "Instructor emails" see the whole board on the page and can preview and act as any student. Preview actions are marked in the log.
+
+The tool sends no email. A leader learns of a join request by opening the page.
+
+## Google permissions of the backend
+
+The script may read and write only the spreadsheet it is attached to, show its own dialogs in that spreadsheet, and contact `oauth2.googleapis.com` to verify sign-ins (`backend/appsscript.json`).
 
 ## Several classes
 

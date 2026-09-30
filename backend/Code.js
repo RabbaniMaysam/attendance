@@ -272,9 +272,6 @@ function requestJoin_(ctx, groupName) {
   closeRequests_(ctx, function (q) { return norm_(q['Email']) === ctx.email; }, 'cancelled');
   sheet_(SH.requests).appendRow([new Date(), ctx.email, String(groupName), 'pending', '']);
   log_(ctx.actor, 'request to join', String(groupName));
-  notify_(ctx, g['Leader email'], fullName_(ctx.me) + ' asks to join ' + groupName,
-    fullName_(ctx.me) + ' (' + ctx.email + ') asks to join ' + groupName +
-    '. Open the sign-up page to approve or decline the request.');
 }
 
 function cancelRequest_(ctx) {
@@ -293,8 +290,6 @@ function decideRequest_(ctx, requesterEmail, approve) {
   if (!approve) {
     closeRequests_(ctx, mine, 'declined');
     log_(ctx.actor, 'decline request', who + ' -> ' + name);
-    notify_(ctx, who, 'Your request to join ' + name + ' was declined',
-      'The leader of ' + name + ' declined your request. Open the sign-up page to create a group or ask another group.');
     return;
   }
   const student = ctx.roster.find(function (r) { return norm_(r['Email']) === who; });
@@ -308,8 +303,7 @@ function decideRequest_(ctx, requesterEmail, approve) {
   setMember_(student, name);
   closeRequests_(ctx, mine, 'approved');
   log_(ctx.actor, 'approve request', who + ' -> ' + name);
-  notify_(ctx, who, 'You joined ' + name, 'The leader of ' + name + ' approved your request.');
-  if (size + 1 >= maxSize) declineAll_(ctx, name, 'declined (group full)', name + ' is now full.');
+  if (size + 1 >= maxSize) declineAll_(ctx, name, 'declined (group full)');
 }
 
 function removeMember_(ctx, memberEmail) {
@@ -321,8 +315,6 @@ function removeMember_(ctx, memberEmail) {
   if (!student) throw new Error('That student is not in ' + name + '.');
   setMember_(student, '');
   log_(ctx.actor, 'remove member', who + ' from ' + name);
-  notify_(ctx, who, 'You were removed from ' + name,
-    'The leader of ' + name + ' removed you from the group. Open the sign-up page to create a group or ask another group.');
 }
 
 /**
@@ -340,15 +332,13 @@ function leaveGroup_(ctx) {
   log_(ctx.actor, 'leave group', name);
   if (!g) return;
   if (!others.length) {
-    declineAll_(ctx, name, 'declined (group closed)', name + ' no longer exists.');
+    declineAll_(ctx, name, 'declined (group closed)');
     sheet_(SH.groups).deleteRow(g._row);
     log_(ctx.actor, 'delete group', name + ' became empty; its claims are released');
   } else if (norm_(g['Leader email']) === ctx.email) {
     const next = norm_(others[0]['Email']);
     sheet_(SH.groups).getRange(g._row, 2).setValue(next);
     log_(ctx.actor, 'new leader', name + ': ' + next);
-    notify_(ctx, next, 'You are now the leader of ' + name,
-      'The previous leader left ' + name + '. You now approve join requests and claim the dataset and topic.');
   }
 }
 
@@ -429,27 +419,8 @@ function closeRequests_(ctx, test, status) {
   return n;
 }
 
-function declineAll_(ctx, groupName, status, reason) {
-  const waiting = ctx.requests.filter(function (q) {
-    return q['Status'] === 'pending' && String(q['Group']) === groupName;
-  }).map(function (q) { return norm_(q['Email']); });
+function declineAll_(ctx, groupName, status) {
   closeRequests_(ctx, function (q) { return String(q['Group']) === groupName; }, status);
-  waiting.forEach(function (mail) {
-    notify_(ctx, mail, 'Your request to join ' + groupName + ' was closed',
-      reason + ' Open the sign-up page to create a group or ask another group.');
-  });
-}
-
-/** Email notice. Never sent during an instructor preview, and never fatal. */
-function notify_(ctx, to, subject, body) {
-  if (ctx.preview || !yes_(ctx.set['Email notifications']) || !norm_(to)) return;
-  try {
-    const link = String(ctx.set['Page link'] || '').trim();
-    MailApp.sendEmail(norm_(to), '[' + String(ctx.set['Course title'] || 'Group sign-up') + '] ' + subject,
-      body + (link ? '\n\n' + link : ''));
-  } catch (err) {
-    log_('system', 'email failed', norm_(to) + ': ' + err.message);
-  }
 }
 
 // ---------------------------------------------------------------- helpers
@@ -533,10 +504,8 @@ function setup() {
     ['Maximum group size', 3, 'The group creator plus the students the creator approves'],
     ['Minimum members to claim', 2, 'A group smaller than this cannot claim a dataset or topic'],
     ['Maximum number of groups', 20, 'Students are not shown this number'],
-    ['Instructor emails', Session.getEffectiveUser().getEmail(), 'Comma-separated. These accounts see the whole board and can preview as any student'],
-    ['Google client ID', '', 'From Google Cloud Console (see README). Sign-in fails while this is blank'],
-    ['Page link', '', 'Address of the student page, added to email notices'],
-    ['Email notifications', 'yes', 'yes = email the leader about join requests and the student about the decision']
+    ['Instructor emails', '', 'Comma-separated. These accounts see the whole board and can preview as any student'],
+    ['Google client ID', '', 'From Google Cloud Console (see README). Sign-in fails while this is blank']
   ]);
   make_(ss, SH.roster, HEAD.roster, []);
   make_(ss, SH.groups, HEAD.groups, []);
@@ -598,7 +567,7 @@ function importRoster(csvText) {
     const sh = sheet_(SH.roster);
     if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, HEAD.roster.length).clearContent();
     if (out.length) sh.getRange(2, 1, out.length, HEAD.roster.length).setValues(out);
-    log_(norm_(Session.getEffectiveUser().getEmail()), 'import roster', out.length + ' students, ' + dropped.length + ' removed');
+    log_('instructor (sheet menu)', 'import roster', out.length + ' students, ' + dropped.length + ' removed');
     return out.length + ' students on the roster. ' + dropped.length + ' removed.';
   } finally {
     lock.releaseLock();

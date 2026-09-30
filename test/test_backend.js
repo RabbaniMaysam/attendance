@@ -6,7 +6,6 @@ const vm = require('vm');
 const dir = path.join(__dirname, '..', 'backend');
 
 const sheets = {};
-const mails = [];
 function mkSheet() {
   const data = [];
   const pad = (r, c) => { while (data.length < r) data.push([]); data.forEach(row => { while (row.length < c) row.push(''); }); };
@@ -36,10 +35,8 @@ const ss = {
 };
 const ctx = {
   SpreadsheetApp: { getActiveSpreadsheet: () => ss, flush() {} },
-  Session: { getEffectiveUser: () => ({ getEmail: () => 'prof@gmail.com' }) },
   LockService: { getScriptLock: () => ({ tryLock: () => true, waitLock() {}, releaseLock() {} }) },
   Utilities: { formatDate: d => d.toISOString(), parseCsv: t => t.trim().split(/\r?\n/).map(l => l.split(',')) },
-  MailApp: { sendEmail: (to, subject) => mails.push({ to, subject }) },
   console
 };
 vm.createContext(ctx);
@@ -57,6 +54,7 @@ const setting = (name, value) => { sheets.Settings.data.find(r => r[0] === name)
 const groupRow = name => sheets.Groups.data.find(r => r[0] === name);
 
 api.setup();
+setting('Instructor emails', 'prof@gmail.com');
 ok(sheets.Datasets.data.length === 20 && sheets.Topics.data.length === 26 && sheets.Groups.data.length === 1, 'setup sizes');
 api.importRoster('Email,Last Name,First Name\n' + 'abcdefgh'.split('').map(c => `${c.toUpperCase()}@x.edu,L${c},F${c}`).join('\n'));
 ok(sheets.Roster.data.length === 9 && sheets.Roster.data[1][2] === 'a@x.edu', 'roster import, emails lowercased');
@@ -77,7 +75,6 @@ throws(() => act('a', 'claimTopic', 1), /at least 2 members/, 'solo leader canno
 throws(() => act('a', 'requestJoin', 'Group 1'), /Leave it before/, 'member cannot request');
 s = act('b', 'requestJoin', 'Group 1');
 ok(s.me.request === 'Group 1' && s.me.group === '' && s.requests.length === 0, 'request pending, no direct join');
-ok(mails.length === 1 && mails[0].to === 'a@x.edu', 'leader emailed');
 ok(state('a').requests.length === 1 && state('a').requests[0].email === 'b@x.edu', 'leader sees the request');
 throws(() => act('c', 'decideRequest', m('b'), true), /Only the group leader/, 'non-member cannot approve');
 s = act('a', 'decideRequest', m('b'), true);
@@ -142,19 +139,15 @@ setting('Maximum number of groups', 20);
 const lastLog = sheets.Log.data[sheets.Log.data.length - 1];
 ok(lastLog[1] === 'b@x.edu' && lastLog[2] === 'refused: createGroup' && /No new group/.test(lastLog[3]), 'refused attempts are logged');
 
-// preview: instructors only, no emails
-const before = mails.length;
+// preview: instructors only
 s = api.handle_('prof@gmail.com', 'requestJoin', ['Group 1'], m('b'));
-ok(s.preview && s.me.request === 'Group 1' && mails.length === before, 'instructor acts as student without emails');
+ok(s.preview && s.me.request === 'Group 1', 'instructor acts as student');
 ok(/preview by prof/.test(sheets.Log.data[sheets.Log.data.length - 1][1]), 'preview logged');
 s = api.handle_(m('e'), 'state', [], m('b'));
 ok(!s.preview && s.email === 'e@x.edu', 'student cannot preview as another student');
 throws(() => api.handle_('prof@gmail.com', 'createGroup', [], ''), /not on the class roster/, 'instructor cannot act as self');
 
-// emails off
-setting('Email notifications', 'no');
 act('e', 'requestJoin', 'Group 2');
-ok(mails.length === before, 'notifications can be disabled');
 
 // deadline
 setting('Deadline', new Date(Date.now() - 1000));

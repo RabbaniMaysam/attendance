@@ -7,9 +7,10 @@
   "oauthScopes": [
     "https://www.googleapis.com/auth/spreadsheets.currentonly",
     "https://www.googleapis.com/auth/script.container.ui",
-    "https://www.googleapis.com/auth/script.external_request",
-    "https://www.googleapis.com/auth/script.send_mail",
-    "https://www.googleapis.com/auth/userinfo.email"
+    "https://www.googleapis.com/auth/script.external_request"
+  ],
+  "urlFetchWhitelist": [
+    "https://oauth2.googleapis.com/"
   ],
   "webapp": {
     "executeAs": "USER_DEPLOYING",

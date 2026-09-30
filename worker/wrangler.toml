@@ -6,7 +6,7 @@ preview_urls = false
 
 [vars]
 # Public identifier of the "Sign in with Google" button (Google Cloud Console). Not a secret.
-GOOGLE_CLIENT_ID = ""
+GOOGLE_CLIENT_ID = "308086551990-5bad5hnam1k2d3l6br1kphht2eov0l2n.apps.googleusercontent.com"
 
 # The instructor emails are stored as a secret, not here:  npx wrangler secret put ADMIN_EMAILS
 

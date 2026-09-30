@@ -35,9 +35,13 @@ const toMin = t => { const m = /^(\d{1,2}):(\d{2})$/.exec(text(t)); return m ? N
 const isDate = d => /^\d{4}-\d{2}-\d{2}$/.test(d);
 const isTime = t => { const m = toMin(t); return !isNaN(m) && m >= 0 && m < 1440; };
 
+/** The schedule a new class starts with (Fall 2026: Tue/Thu 7:50 to 8:05 am, Oct 1 to Dec 8, with the no-class days). */
+export const DEFAULT_SCHEDULE = { days: [2, 4], open: '07:50', close: '08:05', start: '2026-10-01', end: '2026-12-08' };
+export const DEFAULT_SKIP = ['2026-10-06', '2026-10-20', '2026-10-22', '2026-11-19', '2026-11-26'];
+
 export function newAttClass(title, nowMs) {
   return { title: title, createdAt: nyParts(nowMs).date, roster: [],
-           schedule: { days: [2, 4], open: '07:50', close: '08:01', start: '', end: '' }, skip: [], extra: [] };
+           schedule: Object.assign({}, DEFAULT_SCHEDULE), skip: DEFAULT_SKIP.slice(), extra: [] };
 }
 
 /** The attendance windows on one New York date, earliest first. */
@@ -164,9 +168,32 @@ export const ADMIN = {
   /** Replaces the roster (layouts: see parseRoster in rules.js). Marks of dropped students are kept in att_marks. */
   importRoster(s, csv) {
     s.roster = parseRoster(csv);
-    s.roster.sort((a, b) => (a.last + ' ' + a.first).toLowerCase() < (b.last + ' ' + b.first).toLowerCase() ? -1 : 1);
+    sortRoster(s);
+  },
+
+  /** Adds one student. The email may be the Montclair login ID alone (the part before the @). */
+  addStudent(s, first, last, email) {
+    first = text(first); last = text(last);
+    let mail = canonEmail(email);
+    if (mail && !mail.includes('@')) mail = mail + '@montclair.edu';
+    if (!/^\S+@\S+\.\S+$/.test(mail)) throw new Error('That email address is not valid.');
+    if (!first && !last) throw new Error('A name is needed.');
+    if (student(s, mail)) throw new Error(mail + ' is on the roster.');
+    s.roster.push({ first: first, last: last, email: mail });
+    sortRoster(s);
+  },
+
+  /** Removes one student. Marks are kept in att_marks but no longer shown. */
+  removeStudent(s, email) {
+    const mail = canonEmail(email);
+    if (!student(s, mail)) throw new Error(mail + ' is not on the roster.');
+    s.roster = s.roster.filter(r => r.email !== mail);
   }
 };
+
+function sortRoster(s) {
+  s.roster.sort((a, b) => (a.last + ' ' + a.first).toLowerCase() < (b.last + ' ' + b.first).toLowerCase() ? -1 : 1);
+}
 
 /** "Open now for N minutes": an extra window on today's date from now. Returns the window. */
 export function openNowWindow(nowMs, minutes) {
@@ -179,7 +206,7 @@ export function openNowWindow(nowMs, minutes) {
 /** Fills in fields added later. */
 export function upgradeAtt(s) {
   s.roster = s.roster || []; s.skip = s.skip || []; s.extra = s.extra || [];
-  s.schedule = Object.assign({ days: [2, 4], open: '07:50', close: '08:01', start: '', end: '' }, s.schedule || {});
+  s.schedule = Object.assign({}, DEFAULT_SCHEDULE, s.schedule || {});
   delete s.sessions;
   return s;
 }

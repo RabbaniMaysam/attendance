@@ -11,7 +11,13 @@ const est = (date, hhmm) => Date.parse(date + 'T' + hhmm + ':00-05:00');
 
 // 2026-10-06 is a Tuesday, 2026-10-08 a Thursday, 2026-10-07 a Wednesday.
 const s = att.newAttClass('ECON 101', edt('2026-09-01', '10:00'));
-ok(s.schedule.days.join() === '2,4' && s.schedule.open === '07:50' && s.schedule.close === '08:01' && s.createdAt === '2026-09-01', 'defaults: Tue/Thu 7:50 to 8:01');
+ok(s.schedule.days.join() === '2,4' && s.schedule.open === '07:50' && s.schedule.close === '08:05' && s.schedule.start === '2026-10-01' && s.schedule.end === '2026-12-08'
+  && s.skip.length === 5 && s.createdAt === '2026-09-01', 'defaults: Tue/Thu 7:50 to 8:05, Oct 1 to Dec 8, five no-class days');
+ok(att.windowAt(s, edt('2026-10-06', '07:55')) === null && att.windowAt(s, edt('2026-10-08', '07:55')) !== null && att.windowAt(s, edt('2026-12-10', '07:55')) === null,
+  'defaults: Oct 6 skipped, Oct 8 open, Dec 10 after the last day');
+ok(att.nextWindow(s, edt('2026-10-01', '07:00')).date === '2026-10-01' && att.upgradeAtt({ title: 'x' }).schedule.close === '08:05', 'defaults: first Thursday is Oct 1; upgrade fills the defaults');
+// The window tests below use a plain weekly schedule with no bounds and no holidays.
+att.ADMIN.saveSettings(s, { title: 'ECON 101', days: [2, 4], open: '07:50', close: '08:01', start: '', end: '', skip: '' });
 
 let p = att.nyParts(edt('2026-10-06', '07:50'));
 ok(p.date === '2026-10-06' && p.weekday === 2 && p.minutes === 470, 'New York parts in EDT');
@@ -81,6 +87,15 @@ att.ADMIN.importRoster(s, 'Student,SIS Login ID,Quiz 1\n"    Points Possible",,1
 ok(s.roster.length === 2 && s.roster[0].email === 'khanj6@montclair.edu' && s.roster[1].first === 'Elian' && s.roster[1].last === 'Lafontaine Medina',
   'Canvas roster: test student and Points Possible skipped, names split, login becomes montclair.edu address');
 ok(att.studentView(s, 'KhanJ6@mail.montclair.edu', null, edt('2026-10-06', '07:55')).authorized, 'mail.montclair.edu sign-in matches the montclair.edu roster');
+
+// add and remove one student
+att.ADMIN.addStudent(s, 'Ada', 'Aardvark', ' AardvarkA1 ');
+ok(s.roster.length === 3 && s.roster[0].email === 'aardvarka1@montclair.edu' && s.roster[0].first === 'Ada', 'student added by login ID, sorted first');
+throws(() => att.ADMIN.addStudent(s, 'X', 'Y', 'aardvarka1@mail.montclair.edu'), /on the roster/, 'duplicate (other domain) refused');
+throws(() => att.ADMIN.addStudent(s, 'X', 'Y', 'not an email'), /not valid/, 'bad address refused');
+att.ADMIN.removeStudent(s, 'AardvarkA1@mail.montclair.edu');
+ok(s.roster.length === 2 && !att.student(s, 'aardvarka1@montclair.edu'), 'student removed by either domain');
+throws(() => att.ADMIN.removeStudent(s, 'nobody@x.edu'), /not on the roster/, 'removing an unknown student refused');
 
 console.log('passed', pass, 'failed', fail);
 process.exit(fail ? 1 : 0);

@@ -160,6 +160,10 @@ ok(r.data.marks.length === 1 && r.data.sessions.indexOf(r.data.today) !== -1, 't
 r = await att('importRoster', ['Student,SIS Login ID\n"    Points Possible",\n"Student, Test",843b2ebf97d6dff55e1ba2ce8c7910f987d72b05\n"Doe, Jane",doej1']);
 ok(r.ok && r.data.state.roster.length === 1 && r.data.state.roster[0].email === 'doej1@montclair.edu' && r.data.state.roster[0].first === 'Jane', 'Canvas roster imported');
 ok((await post('/att', { token: token('doej1@mail.montclair.edu'), class: AK, action: 'state' })).state.authorized === true, 'mail.montclair.edu sign-in matches the montclair.edu roster');
+r = await att('addStudent', ['Al', 'Ash', 'asha1']);
+ok(r.ok && r.data.state.roster.length === 2 && r.data.state.roster[0].email === 'asha1@montclair.edu', 'student added by login ID');
+r = await att('removeStudent', ['asha1@mail.montclair.edu']);
+ok(r.ok && r.data.state.roster.length === 1, 'student removed');
 ok(/Type the class key/.test((await att('deleteClass', ['wrong'])).error), 'attendance delete needs the key typed');
 r = await att('deleteClass', [AK]);
 ok(r.ok && !r.data.classes.some(c => c.key === AK) && /does not match/.test((await att('get')).error), 'attendance class deleted');

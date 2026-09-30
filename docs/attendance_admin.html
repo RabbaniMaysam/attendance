@@ -496,9 +496,19 @@
         reader.readAsText(file.files[0]);
       });
     })));
+    var aFirst = el('input', { type: 'text', placeholder: 'first name', size: 14 }), aLast = el('input', { type: 'text', placeholder: 'last name', size: 14 });
+    var aMail = el('input', { type: 'text', placeholder: 'email or Montclair login ID', size: 26 });
+    card.appendChild(el('div', { class: 'row', style: 'margin-top:10px' }, el('span', { class: 'muted', text: 'Add one student:' }), aFirst, aLast, aMail,
+      button('Add', 'plain', function () { run('addStudent', [aFirst.value, aLast.value, aMail.value], 'Student added.'); })));
     if (!S.roster.length) return;
-    var t = el('table', {}, el('tr', {}, el('th', { text: 'Last name' }), el('th', { text: 'First name' }), el('th', { text: 'Email' })));
-    S.roster.forEach(function (r) { t.appendChild(el('tr', {}, el('td', { text: r.last }), el('td', { text: r.first }), el('td', { text: r.email }))); });
+    var t = el('table', {}, el('tr', {}, el('th', { text: 'Last name' }), el('th', { text: 'First name' }), el('th', { text: 'Email' }), el('th', {})));
+    S.roster.forEach(function (r) {
+      t.appendChild(el('tr', {}, el('td', { text: r.last }), el('td', { text: r.first }), el('td', { text: r.email }),
+        el('td', {}, button('Remove', 'danger', function () {
+          ask('Remove ' + fullName(r) + '?', ['The student can no longer mark attendance. Existing marks stay in the database but are no longer shown.'], 'Remove', true)
+            .then(function (yes) { if (yes) run('removeStudent', [r.email], fullName(r) + ' removed.'); });
+        }))));
+    });
     card.appendChild(t);
   }
 

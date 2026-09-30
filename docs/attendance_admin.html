@@ -61,9 +61,12 @@
     .modal p { margin: 0 0 8px; }
     .modal .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
     button.danger.solid { background: var(--warn); color: #fff; }
-    button.add { background: var(--ok); border-color: var(--ok); width: 40px; height: 34px; padding: 0; font-size: 24px; line-height: 1; font-weight: 700; }
-    table.sessions { width: auto; }
-    table.sessions td { vertical-align: middle; }
+    .qrveil { background: #fff; flex-direction: column; cursor: pointer; text-align: center; }
+    .qrveil h1 { font-size: 34px; margin: 0 0 12px; }
+    .qr { width: min(70vh, 90vw); height: min(70vh, 90vw); }
+    .qr svg { width: 100%; height: 100%; display: block; }
+    .qrurl { font-size: 26px; margin: 14px 0 4px; word-break: break-all; }
+    .qrstatus { font-size: 22px; margin: 0 0 6px; color: var(--ok); }
   </style>
 </head>
 <body>
@@ -75,6 +78,7 @@
   var API = (window.SIGNUP_API || '').replace(/\/+$/, '');
   var TOKEN_KEY = 'signup_token';  // shared with the sign-up instructor page: one sign-in serves both
   var TZ = 'America/New_York';
+  var DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   var TABS = ['Attendance', 'Settings', 'Roster'];
   var token = '', me = '', classes = [], cur = '', D = null, tab = 'Attendance';
   var flash = null, busy = false, timer = null;
@@ -131,7 +135,7 @@
     call(action, args).then(function (d) {
       busy = false; D = d; flash = okText ? { ok: okText } : null;
       render();
-      if (action === 'saveTitle') refreshClasses();
+      if (action === 'saveSettings') refreshClasses();
     }).catch(fail);
   }
 
@@ -238,6 +242,36 @@
     });
   }
 
+  /** Full-screen QR code of the student link, for the classroom projector. The status line follows the 10-second grid refresh. */
+  function showQr() {
+    var url = studentLink();
+    var draw = function () {
+      var qr = window.qrcode(0, 'M');
+      qr.addData(url); qr.make();
+      var pic = el('div', { class: 'qr' }); pic.innerHTML = qr.createSvgTag({ cellSize: 8, margin: 2, scalable: true });
+      var status = el('p', { class: 'qrstatus' });
+      var tick = function () {
+        if (!D) return;
+        status.textContent = D.open
+          ? 'Open until ' + clock(D.open.close) + ' · ' + D.marks.filter(function (m) { return m.date === D.today; }).length + ' of ' + D.state.roster.length + ' marked'
+          : 'Attendance is closed' + (D.next ? ' · next: ' + shortDate(D.next.date) + ', ' + clock(D.next.open) : '');
+      };
+      tick();
+      var iv = setInterval(tick, 2000);
+      var veil, onKey = function (ev) { if (ev.key === 'Escape') done(); };
+      var done = function () { clearInterval(iv); veil.remove(); document.removeEventListener('keydown', onKey); };
+      veil = el('div', { class: 'veil qrveil', on: { click: done } },
+        el('h1', { text: D ? D.state.title : cur }), pic, el('p', { class: 'qrurl', text: url }), status,
+        el('p', { class: 'muted', text: 'Click anywhere or press Esc to close.' }));
+      document.body.appendChild(veil);
+      document.addEventListener('keydown', onKey);
+    };
+    if (window.qrcode) { draw(); return; }
+    var sc = el('script', { src: 'https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js',
+      on: { load: draw, error: function () { flash = { err: 'The QR code library could not be loaded. Check the internet connection.' }; render(); } } });
+    document.head.appendChild(sc);
+  }
+
   // ---------------------------------------------------------------- rendering
 
   function render() {
@@ -270,7 +304,8 @@
       }).catch(fail);
     }));
     app.appendChild(el('div', { class: 'card' }, chooser,
-      cur ? el('p', { class: 'muted', style: 'margin:0' }, 'Student link: ', el('code', { text: studentLink() })) : null));
+      cur ? el('p', { class: 'muted', style: 'margin:0' }, 'Student link: ', el('code', { text: studentLink() }), ' ',
+        el('button', { class: 'link', text: 'Show QR code', on: { click: showQr } })) : null));
     if (flash) app.appendChild(el('div', { class: 'banner ' + (flash.err ? 'err' : 'ok'), text: flash.err || flash.ok }));
     if (!cur) { app.appendChild(el('p', { class: 'muted', style: 'margin-top:12px', text: 'No attendance class exists yet. Create one above.' })); return; }
     if (!D) { app.appendChild(el('p', { class: 'muted', text: 'Loading...' })); return; }
@@ -296,9 +331,11 @@
     var minutes = el('input', { type: 'number', min: 1, max: 600, value: 10, style: 'width:70px' });
     card.appendChild(el('div', { class: 'row' },
       button('Open attendance now', '', function () {
-        ask('Open attendance now for ' + minutes.value + ' minutes?', ['Students can mark themselves present until ' + minutes.value + ' minutes from now. This adds a session for today to the schedule (see Settings).'], 'Open now', false)
+        ask('Open attendance now for ' + minutes.value + ' minutes?', ['Students can mark themselves present until ' + minutes.value + ' minutes from now. Marks made in this window are recorded under today\'s date like any other; the window is listed under Settings.'], 'Open now', false)
           .then(function (yes) { if (yes) run('openNow', [Number(minutes.value)], 'Attendance is open.'); });
       }), el('label', {}, 'for ', minutes, ' minutes'),
+      el('span', { class: 'muted', text: '·' }),
+      button('Show QR code', 'plain', showQr),
       el('span', { class: 'muted', text: '·' }),
       button('Download CSV', 'plain', function () {
         var head = ['Last name', 'First name', 'Email'].concat(D.sessions, ['Present', 'Sessions']);
@@ -337,55 +374,48 @@
     card.appendChild(el('div', { class: 'scroll' }, t));
     card.appendChild(el('p', { class: 'muted', style: 'margin-top:10px' },
       el('span', { class: 'swatch on' }), ' marked by the student during the window; ', el('span', { class: 'swatch inst' }),
-      ' set by you. Click any cell to mark or clear a student. Columns are the scheduled sessions through today, plus any day with a mark. The grid refreshes every 10 seconds.'));
+      ' set by you. Click any cell to mark or clear a student. Columns are the scheduled class days from the semester start through today, plus any day with a mark. The grid refreshes every 10 seconds.'));
   }
 
   // ---- Settings
-  // The session list is edited in a draft (kept across redraws until saved) and sent whole with "Save schedule".
-  var draft = null, draftClass = '';
-  function plusDays(ymd, n) { var d = new Date(ymd + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
-
   function settings(card) {
-    var S = D.state;
+    var S = D.state, sch = S.schedule;
     var title = el('input', { type: 'text', value: S.title, size: 40 });
-    card.appendChild(el('h2', { text: 'Title' }));
-    card.appendChild(el('div', { class: 'row' }, title, button('Save title', '', function () { run('saveTitle', [title.value], 'Title saved.'); })));
+    var days = DAY_NAMES.map(function (name, i) {
+      var cb = el('input', { type: 'checkbox' }); cb.checked = sch.days.indexOf(i) !== -1;
+      return { i: i, cb: cb, label: el('label', {}, cb, name.slice(0, 3)) };
+    });
+    var open = el('input', { type: 'time', value: sch.open }), close = el('input', { type: 'time', value: sch.close });
+    var start = el('input', { type: 'date', value: sch.start || '' }), end = el('input', { type: 'date', value: sch.end || '' });
+    var skip = el('textarea', { value: S.skip.join('\n'), placeholder: '2026-11-26' });
+    card.appendChild(el('h2', { text: 'Schedule' }));
+    var dayRow = el('div', { class: 'row' }); days.forEach(function (d) { dayRow.appendChild(d.label); });
+    card.appendChild(el('dl', {},
+      el('dt', { text: 'Title' }), el('dd', {}, title),
+      el('dt', { text: 'Class days' }), el('dd', {}, dayRow),
+      el('dt', { text: 'Opens at' }), el('dd', {}, open, ' ', el('span', { class: 'muted', text: 'New York time' })),
+      el('dt', { text: 'Closes at' }), el('dd', {}, close),
+      el('dt', { text: 'First class day' }), el('dd', {}, start, ' ', el('span', { class: 'muted', text: 'optional; the grid starts here' })),
+      el('dt', { text: 'Last class day' }), el('dd', {}, end, ' ', el('span', { class: 'muted', text: 'optional; no windows after it' })),
+      el('dt', { text: 'No class on' }), el('dd', {}, skip, el('div', { class: 'muted', text: 'One date per line, YYYY-MM-DD (holidays, cancelled classes).' }))));
+    card.appendChild(el('div', { class: 'row' }, button('Save', '', function () {
+      run('saveSettings', [{ title: title.value, days: days.filter(function (d) { return d.cb.checked; }).map(function (d) { return d.i; }),
+        open: open.value, close: close.value, start: start.value, end: end.value, skip: skip.value }], 'Settings saved.');
+    })));
 
-    card.appendChild(el('h2', { text: 'Sessions', style: 'margin-top:18px' }));
-    card.appendChild(el('p', { class: 'muted', text: 'Each row is one date on which attendance opens and closes (New York time). The green + adds a row with the same times, one week later; change its date as needed. Nothing changes until you press "Save schedule".' }));
-    if (draftClass !== cur || !draft) { draft = S.sessions.map(function (x) { return { date: x.date, open: x.open, close: x.close }; }); draftClass = cur; }
-    var box = el('div', {});
-    function rowUi(x, i) {
-      var date = el('input', { type: 'date', value: x.date, on: { change: function () { x.date = date.value; } } });
-      var open = el('input', { type: 'time', value: x.open, on: { change: function () { x.open = open.value; } } });
-      var close = el('input', { type: 'time', value: x.close, on: { change: function () { x.close = close.value; } } });
-      return el('tr', {}, el('td', {}, date), el('td', {}, open), el('td', {}, close),
-        el('td', {}, el('button', { class: 'add', text: '+', title: 'Add a session with the same times', on: { click: function () {
-          draft.splice(i + 1, 0, { date: x.date ? plusDays(x.date, 7) : '', open: x.open, close: x.close }); drawRows();
-        } } })),
-        el('td', {}, button('Remove', 'danger', function () { draft.splice(i, 1); drawRows(); })));
+    card.appendChild(el('h2', { text: 'One-off windows', style: 'margin-top:18px' }));
+    card.appendChild(el('p', { class: 'muted', text: 'A window on a date outside the weekly schedule (a moved class, or a window you opened with "Open attendance now"). Marks made in any window are kept in the grid and the CSV, also after the window is removed here.' }));
+    if (S.extra.length) {
+      var t = el('table', {}, el('tr', {}, el('th', { text: 'Date' }), el('th', { text: 'Opens' }), el('th', { text: 'Closes' }), el('th', {})));
+      S.extra.forEach(function (x) {
+        t.appendChild(el('tr', {}, el('td', { text: shortDate(x.date) + ' (' + x.date + ')' }), el('td', { text: clock(x.open) }), el('td', { text: clock(x.close) }),
+          el('td', {}, button('Remove', 'danger', function () { run('removeExtra', [x.date], 'Window removed.'); }))));
+      });
+      card.appendChild(t);
     }
-    function drawRows() {
-      box.innerHTML = '';
-      if (draft.length) {
-        var t = el('table', { class: 'sessions' }, el('tr', {}, el('th', { text: 'Date' }), el('th', { text: 'Opens' }), el('th', { text: 'Closes' }), el('th', {}), el('th', {})));
-        draft.forEach(function (x, i) { t.appendChild(rowUi(x, i)); });
-        box.appendChild(t);
-      } else box.appendChild(el('p', { class: 'muted', text: 'No sessions yet.' }));
-      var changed = JSON.stringify(draft) !== JSON.stringify(S.sessions.map(function (x) { return { date: x.date, open: x.open, close: x.close }; }));
-      box.appendChild(el('div', { class: 'row', style: 'margin-top:10px' },
-        button('Add session', 'plain', function () {
-          var last = draft[draft.length - 1];
-          draft.push({ date: last && last.date ? plusDays(last.date, 7) : D.today, open: last ? last.open : '07:50', close: last ? last.close : '08:01' }); drawRows();
-        }),
-        button('Save schedule', '', function () {
-          busy = true; flash = null;
-          call('saveSessions', [draft]).then(function (d) { busy = false; D = d; draft = null; flash = { ok: 'Schedule saved.' }; render(); }).catch(fail);
-        }),
-        changed ? el('span', { class: 'muted', text: 'Unsaved changes.' }) : null));
-    }
-    drawRows();
-    card.appendChild(box);
+    var xd = el('input', { type: 'date' }), xo = el('input', { type: 'time', value: sch.open }), xc = el('input', { type: 'time', value: sch.close });
+    card.appendChild(el('div', { class: 'row', style: 'margin-top:8px' }, xd, xo, ' to ', xc,
+      button('Add window', 'plain', function () { run('addExtra', [xd.value, xo.value, xc.value], 'Window added.'); })));
 
     card.appendChild(el('h2', { text: 'Delete this class', style: 'margin-top:18px' }));
     var conf = el('input', { type: 'text', placeholder: 'type the class key: ' + cur, size: 30 });

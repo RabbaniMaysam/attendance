@@ -322,7 +322,7 @@ async function attAdminCall(env, real, action, key, args) {
     if (!/^[a-z0-9-]{2,30}$/.test(newKey)) throw new Error('The class key must be 2 to 30 lowercase letters, digits, or hyphens.');
     if (!title) throw new Error('The class needs a title.');
     const res = await env.DB.prepare('INSERT OR IGNORE INTO att_classes (key, state) VALUES (?, ?)')
-      .bind(newKey, JSON.stringify(att.newAttClass(title))).run();
+      .bind(newKey, JSON.stringify(att.newAttClass(title, now))).run();
     if (res.meta.changes !== 1) throw new Error('A class with the key "' + newKey + '" exists.');
     return { key: newKey, classes: await attClassList(env) };
   }
@@ -351,7 +351,7 @@ async function attAdminCall(env, real, action, key, args) {
     }
   } else if (action === 'openNow') {
     const w = att.openNowWindow(now, args[0]);
-    att.ADMIN.addSession(s, w.date, w.open, w.close);
+    att.ADMIN.addExtra(s, w.date, w.open, w.close);
     await writeAtt(env, key, s);
   } else if (Object.prototype.hasOwnProperty.call(att.ADMIN, action)) {
     att.ADMIN[action](s, ...args);

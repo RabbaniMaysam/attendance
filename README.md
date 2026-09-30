@@ -45,7 +45,7 @@ One backend serves every class. A class is created on the instructor page with a
 
 ## Attendance tool
 
-The same backend also serves a separate attendance tool: `docs/attendance.html` for students (link `attendance.html?c=key`) and `docs/attendance_admin.html` for the instructor. An attendance class has its own roster (same import) and a list of sessions, each a date with an opening and a closing clock time (New York time). On the instructor page a green "+" beside a session adds one with the same times a week later, and "Open attendance now for N minutes" adds a session for today. A student signs in and presses one button while a session is open; the mark is refused otherwise. The instructor page shows a students-by-dates grid (refreshed every 10 seconds), where any cell can be marked or cleared by hand, and downloads the grid as CSV. Rules are in `worker/src/attendance.js`; storage is the `att_classes` and `att_marks` tables.
+The same backend also serves a separate attendance tool: `docs/attendance.html` for students (link `attendance.html?c=key`) and `docs/attendance_admin.html` for the instructor. An attendance class has its own roster (same import), weekly class days with an opening and a closing clock time (New York time; default Tuesday and Thursday, 7:50 to 8:01 am), optional first and last class days, holidays, and one-off windows ("Open attendance now for N minutes"). Marks are stored by date whichever window they were made in. A student signs in and presses one button while a window is open; the mark is refused outside a window. The instructor page shows a full-screen QR code of the student link for the classroom screen, with the live count of marks. The instructor page shows a students-by-dates grid (refreshed every 10 seconds), where any cell can be marked or cleared by hand, and downloads the grid as CSV. Rules are in `worker/src/attendance.js`; storage is the `att_classes` and `att_marks` tables.
 
 ## Sign-in
 
@@ -67,6 +67,6 @@ Then write the Worker's address into `docs/config.js`.
 ## Tests
 
 - `node test/test_rules.mjs` checks the rules on an in-memory class.
-- `node test/test_attendance.mjs` checks the attendance sessions (New York time, clock changes), roster import, and the student view.
+- `node test/test_attendance.mjs` checks the attendance windows (New York time, clock changes, holidays), settings, roster import, and the student view.
 - `node test/test_worker.mjs` checks a local copy of the Worker end to end, including simultaneous claims of one item (its header lists the commands).
 - `node test/check_pages.mjs` checks that the page scripts parse.

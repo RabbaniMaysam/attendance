@@ -4,9 +4,13 @@
  *
  * State of an attendance class (att_classes.state):
  *   title      course title
+ *   createdAt  'YYYY-MM-DD' (New York date the class was created)
  *   roster     [{first, last, email}]
- *   sessions   [{date: 'YYYY-MM-DD', open: 'HH:MM', close: 'HH:MM'}]  the dates and windows when attendance is open
- * All clock times are New York local time. Marks are stored separately (att_marks).
+ *   schedule   {days: [0-6, 0 = Sunday], open: 'HH:MM', close: 'HH:MM', start: 'YYYY-MM-DD' or '', end: 'YYYY-MM-DD' or ''}
+ *   skip       ['YYYY-MM-DD', ...]   scheduled days with no class (holidays)
+ *   extra      [{date, open, close}] one-off windows (a moved class, or "open now")
+ * All clock times are New York local time. Marks are stored separately (att_marks), keyed by
+ * date and email, whichever window (weekly or one-off) they were made in.
  */
 
 import { parseRoster, canonEmail } from './rules.js';
@@ -28,38 +32,45 @@ export function nyParts(ms) {
 }
 
 const toMin = t => { const m = /^(\d{1,2}):(\d{2})$/.exec(text(t)); return m ? Number(m[1]) * 60 + Number(m[2]) : NaN; };
-const hhmm = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
-const isDate = d => /^\d{4}-\d{2}-\d{2}$/.test(d) && !isNaN(Date.parse(d + 'T12:00:00Z'));
+const isDate = d => /^\d{4}-\d{2}-\d{2}$/.test(d);
 const isTime = t => { const m = toMin(t); return !isNaN(m) && m >= 0 && m < 1440; };
-const bySessionOrder = (a, b) => (a.date + a.open).localeCompare(b.date + b.open);
 
-export function newAttClass(title) {
-  return { title: title, roster: [], sessions: [] };
+export function newAttClass(title, nowMs) {
+  return { title: title, createdAt: nyParts(nowMs).date, roster: [],
+           schedule: { days: [2, 4], open: '07:50', close: '08:01', start: '', end: '' }, skip: [], extra: [] };
 }
 
-/** Checks one session row and returns it in canonical form. */
-function session(v) {
-  const date = text(v && v.date), open = text(v && v.open), close = text(v && v.close);
-  if (!isDate(date)) throw new Error('"' + date + '" is not a date (YYYY-MM-DD).');
-  if (!isTime(open) || !isTime(close)) throw new Error('Times must be HH:MM (24-hour) on ' + date + '.');
-  if (toMin(close) <= toMin(open)) throw new Error('The close time must be after the open time on ' + date + '.');
-  return { date: date, open: hhmm(toMin(open)), close: hhmm(toMin(close)) };
+/** The attendance windows on one New York date, earliest first. */
+export function windowsOn(s, date, weekday) {
+  const out = s.extra.filter(x => x.date === date).map(x => ({ open: x.open, close: x.close, extra: true }));
+  const sch = s.schedule;
+  if (sch.days.indexOf(weekday) !== -1 && s.skip.indexOf(date) === -1 &&
+      (!sch.start || date >= sch.start) && (!sch.end || date <= sch.end)) {
+    out.push({ open: sch.open, close: sch.close, extra: false });
+  }
+  return out.sort((a, b) => toMin(a.open) - toMin(b.open));
 }
 
 /** The window open at ms, or null. */
 export function windowAt(s, ms) {
   const p = nyParts(ms);
-  const w = s.sessions.find(x => x.date === p.date && p.minutes >= toMin(x.open) && p.minutes < toMin(x.close));
-  return w ? { date: w.date, open: w.open, close: w.close } : null;
+  const w = windowsOn(s, p.date, p.weekday).find(x => p.minutes >= toMin(x.open) && p.minutes < toMin(x.close));
+  return w ? { date: p.date, open: w.open, close: w.close } : null;
 }
 
-/** The next session that opens after ms, or null. */
+/** The next window that opens after ms, within 70 days, or null. */
 export function nextWindow(s, ms) {
-  const p = nyParts(ms);
-  const w = s.sessions.slice().sort(bySessionOrder).find(x => x.date > p.date || (x.date === p.date && toMin(x.open) > p.minutes));
-  if (!w) return null;
-  const days = Math.round((Date.parse(w.date + 'T12:00:00Z') - Date.parse(p.date + 'T12:00:00Z')) / 86400000);
-  return { date: w.date, open: w.open, close: w.close, daysAhead: days };
+  const now = nyParts(ms);
+  let last = '';
+  for (let k = 0; k <= 70; k++) {
+    // Stepping in half days never skips a New York date across a clock change; duplicates are skipped.
+    const p = nyParts(ms + k * 43200000);
+    if (p.date === last) continue;
+    last = p.date;
+    const w = windowsOn(s, p.date, p.weekday).find(x => p.date > now.date || toMin(x.open) > now.minutes);
+    if (w) return { date: p.date, open: w.open, close: w.close, daysAhead: k === 0 ? 0 : Math.round((k * 43200000) / 86400000) };
+  }
+  return null;
 }
 
 /** Milliseconds until the open/closed status next changes (capped at 6 hours). */
@@ -78,12 +89,22 @@ export function refreshIn(s, ms) {
   return Math.max(1000, Math.min(target + 500, 6 * 3600000));
 }
 
-/** Session dates through today, plus dates that have marks, sorted. */
+/** All class dates from the semester start (or the class creation) through today, plus dates that have marks. */
 export function sessionDates(s, markDates, ms) {
   const today = nyParts(ms).date;
+  const first = s.schedule.start || s.createdAt || today;
   const set = {};
   markDates.forEach(d => { set[d] = true; });
-  s.sessions.forEach(x => { if (x.date <= today) set[x.date] = true; });
+  // Walk day by day from the first date to today (at most a year).
+  const t0 = Date.parse(first + 'T12:00:00Z');
+  if (!isNaN(t0)) {
+    for (let k = 0; k < 370; k++) {
+      const d = new Date(t0 + k * 86400000).toISOString().slice(0, 10);
+      if (d > today) break;
+      const wd = new Date(t0 + k * 86400000).getUTCDay();
+      if (windowsOn(s, d, wd).length) set[d] = true;
+    }
+  }
   return Object.keys(set).sort();
 }
 
@@ -110,27 +131,34 @@ export function studentView(s, email, mark, ms) {
 // ---------------------------------------------------------------- instructor actions (change the state in place)
 
 export const ADMIN = {
-  saveTitle(s, title) {
-    title = text(title);
+  saveSettings(s, v) {
+    const title = text(v && v.title);
     if (!title) throw new Error('The course title is empty.');
+    const days = Array.isArray(v.days) ? v.days.map(Number).filter(d => d >= 0 && d <= 6) : [];
+    const open = text(v.open), close = text(v.close);
+    if (!isTime(open) || !isTime(close)) throw new Error('Open and close times must be HH:MM (24-hour).');
+    if (toMin(close) <= toMin(open)) throw new Error('The close time must be after the open time.');
+    const start = text(v.start), end = text(v.end);
+    if ((start && !isDate(start)) || (end && !isDate(end))) throw new Error('Semester dates must be YYYY-MM-DD.');
+    const skip = String(v.skip || '').split(/[\s,;]+/).map(text).filter(Boolean);
+    const badSkip = skip.find(d => !isDate(d));
+    if (badSkip) throw new Error('"' + badSkip + '" is not a date (YYYY-MM-DD).');
     s.title = title;
+    s.schedule = { days: days.sort(), open: open, close: close, start: start, end: end };
+    s.skip = skip.filter((d, i) => skip.indexOf(d) === i).sort();
   },
 
-  /** Replaces the whole session list. Identical rows are merged; rows are kept in date order. */
-  saveSessions(s, list) {
-    if (!Array.isArray(list)) throw new Error('No sessions were sent.');
-    const seen = {};
-    s.sessions = list.map(session).filter(x => {
-      const k = x.date + x.open + x.close;
-      if (seen[k]) return false;
-      seen[k] = true;
-      return true;
-    }).sort(bySessionOrder);
+  /** A one-off window on one date, for a moved class or "open now". Replaces any extra window on that date. */
+  addExtra(s, date, open, close) {
+    date = text(date); open = text(open); close = text(close);
+    if (!isDate(date)) throw new Error('The date must be YYYY-MM-DD.');
+    if (!isTime(open) || !isTime(close) || toMin(close) <= toMin(open)) throw new Error('Times must be HH:MM with close after open.');
+    s.extra = s.extra.filter(x => x.date !== date).concat([{ date: date, open: open, close: close }]).sort((a, b) => (a.date < b.date ? -1 : 1));
   },
 
-  /** Adds one session (used by "open now"). */
-  addSession(s, date, open, close) {
-    ADMIN.saveSessions(s, s.sessions.concat([{ date: date, open: open, close: close }]));
+  /** Removes the one-off window on a date. Marks made in it stay in att_marks and in the grid. */
+  removeExtra(s, date) {
+    s.extra = s.extra.filter(x => x.date !== text(date));
   },
 
   /** Replaces the roster (layouts: see parseRoster in rules.js). Marks of dropped students are kept in att_marks. */
@@ -140,17 +168,18 @@ export const ADMIN = {
   }
 };
 
-/** "Open now for N minutes": a session on today's date from now. */
+/** "Open now for N minutes": an extra window on today's date from now. Returns the window. */
 export function openNowWindow(nowMs, minutes) {
   const n = Math.min(Math.max(Number(minutes) || 0, 1), 600);
   const p = nyParts(nowMs);
+  const hhmm = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
   return { date: p.date, open: hhmm(p.minutes), close: hhmm(Math.min(p.minutes + n, 1439)) };
 }
 
-/** Fills in fields added later and drops the fields of the earlier weekly schedule. */
+/** Fills in fields added later. */
 export function upgradeAtt(s) {
-  s.roster = s.roster || [];
-  s.sessions = s.sessions || (s.extra || []).map(x => ({ date: x.date, open: x.open, close: x.close }));
-  ['schedule', 'skip', 'extra', 'createdAt'].forEach(k => { delete s[k]; });
+  s.roster = s.roster || []; s.skip = s.skip || []; s.extra = s.extra || [];
+  s.schedule = Object.assign({ days: [2, 4], open: '07:50', close: '08:01', start: '', end: '' }, s.schedule || {});
+  delete s.sessions;
   return s;
 }

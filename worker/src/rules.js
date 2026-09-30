@@ -200,6 +200,18 @@ const ACTIONS = {
   }
 };
 
+/** Fills in fields added after a class was created, so older stored states read like new ones. */
+export function upgrade(s) {
+  s.groups.forEach(g => {
+    ['dataset', 'topic'].forEach(k => {
+      if (g[k + 'By'] === undefined) g[k + 'By'] = g[k] ? 'group' : '';
+      const own = 'group' + k.charAt(0).toUpperCase() + k.slice(1);
+      if (g[own] === undefined) g[own] = g[k + 'By'] === 'group' ? g[k] : '';
+    });
+  });
+  return s;
+}
+
 /** The account a request acts for. Only an instructor may act for another roster email. */
 const acting = (real, viewAs, admin) => (admin && norm(viewAs) ? norm(viewAs) : real);
 

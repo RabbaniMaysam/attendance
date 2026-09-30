@@ -68,9 +68,9 @@
   var API = (window.SIGNUP_API || '').replace(/\/+$/, '');
   var TOKEN_KEY = 'signup_token';
   var TZ = 'America/New_York';
-  var TABS = ['Overview', 'Roster', 'Groups', 'Datasets', 'Topics', 'Log'];
+  var TABS = ['Overview', 'Roster', 'Groups', 'Datasets', 'Topics', 'Log', 'History'];
   var token = '', me = '', classes = [], cur = '', C = null, tab = 'Overview';
-  var flash = null, busy = false, logRows = null, logSearch = '';
+  var flash = null, busy = false, logRows = null, logSearch = '', snapRows = null;
   try { token = sessionStorage.getItem(TOKEN_KEY) || ''; cur = sessionStorage.getItem('signup_admin_class') || ''; } catch (e) {}
 
   // ---------------------------------------------------------------- plumbing
@@ -97,7 +97,7 @@
   }
 
   function setClass(key) {
-    cur = key || ''; C = null; logRows = null;
+    cur = key || ''; C = null; logRows = null; snapRows = null;
     try { sessionStorage.setItem('signup_admin_class', cur); } catch (e) {}
   }
 
@@ -123,10 +123,15 @@
   function run(action, args, okText) {
     busy = true; flash = null;
     call(action, args).then(function (d) {
-      busy = false; C = d.state; logRows = null; flash = { ok: okText };
+      busy = false; C = d.state; logRows = null; snapRows = null; flash = { ok: okText };
       render();
-      if (action === 'saveSettings') refreshClasses();
+      if (action === 'saveSettings' || action === 'restore') refreshClasses();
+      if (tab === 'History') loadSnapshots();
     }).catch(fail);
+  }
+
+  function loadSnapshots() {
+    call('snapshots', [500]).then(function (d) { snapRows = d.rows; render(); }).catch(fail);
   }
 
   function refreshClasses() {
@@ -303,12 +308,14 @@
     var tabs = el('div', { class: 'tabs' });
     TABS.forEach(function (t) {
       tabs.appendChild(el('button', { text: t, class: 'tab' + (t === tab ? ' on' : ''), on: { click: function () {
-        tab = t; flash = null; render(); if (t === 'Log' && !logRows) loadLog();
+        tab = t; flash = null; render();
+        if (t === 'Log' && !logRows) loadLog();
+        if (t === 'History' && !snapRows) loadSnapshots();
       } } }));
     });
     app.appendChild(tabs);
     var card = el('div', { class: 'card' });
-    ({ Overview: overview, Roster: roster, Groups: groups, Datasets: datasets, Topics: topics, Log: log })[tab](card);
+    ({ Overview: overview, Roster: roster, Groups: groups, Datasets: datasets, Topics: topics, Log: log, History: history })[tab](card);
     app.appendChild(card);
     window.scrollTo(0, keepScroll);
   }
@@ -393,7 +400,18 @@
     var pending = {};
     C.requests.forEach(function (q) { if (q.status === 'pending') pending[q.email] = q.group; });
     var t = el('table', {}, el('tr', {}, el('th', { text: 'Student' }), el('th', { text: 'Email' }), el('th', { text: 'Group' }), el('th', { text: 'Note' }), el('th', {})));
-    C.roster.forEach(function (r) {
+    // Sorted by group (in the order the groups were created), leader first, then by name; students without a group last.
+    var order = {};
+    C.groups.forEach(function (g, i) { order[g.name] = i; });
+    var rank = function (r) {
+      var g = C.groups.filter(function (x) { return x.name === r.group; })[0];
+      return [r.group ? order[r.group] : 1e9, g && g.leader === r.email ? 0 : 1, (r.last + ' ' + r.first).toLowerCase()];
+    };
+    C.roster.slice().sort(function (a, b) {
+      var x = rank(a), y = rank(b);
+      for (var i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] < y[i] ? -1 : 1;
+      return 0;
+    }).forEach(function (r) {
       var g = C.groups.filter(function (x) { return x.name === r.group; })[0];
       var leads = !!g && g.leader === r.email;
       t.appendChild(el('tr', {}, el('td', { text: fullName(r) }), el('td', { text: r.email }),
@@ -542,6 +560,28 @@
     });
     card.appendChild(t);
     if (!logRows.length) card.appendChild(el('p', { class: 'muted', text: 'No lines.' }));
+  }
+
+  function history(card) {
+    card.appendChild(el('h2', { text: 'History and undo' }));
+    card.appendChild(el('p', { class: 'muted', text: 'Before every change (by a student or by you), the whole class state is saved. ' +
+      '"Restore" puts the class back to how it was just before that change, undoing everything after it. ' +
+      'A restore is itself a change, so it can be undone from this same list. The activity log is not altered. Newest first, up to 500.' }));
+    if (!snapRows) { card.appendChild(el('p', { class: 'muted', text: 'Loading...' })); return; }
+    var t = el('table', {}, el('tr', {}, el('th', { text: 'Change' }), el('th', { text: 'Time' }), el('th', { text: 'By' }), el('th', { text: 'Detail' }), el('th', {})));
+    snapRows.forEach(function (r, i) {
+      t.appendChild(el('tr', {}, el('td', { text: r.action }), el('td', { class: 'time', text: when(r.time) }), el('td', { text: r.actor }),
+        el('td', { text: r.detail }),
+        el('td', { style: 'white-space:nowrap' }, button(i === 0 ? 'Undo' : 'Restore to before', i === 0 ? 'danger' : 'plain', function () {
+          ask('Restore the class to before this change?', [
+            'Change: "' + r.action + '" by ' + r.actor + ' at ' + when(r.time) + '.',
+            i === 0 ? 'This undoes the latest change only.' : 'This undoes this change and the ' + i + ' later one(s) above it.',
+            'Roster, groups, requests, claims, and settings all revert. Students see the restored state within seconds. You can undo the restore from this list.'],
+            i === 0 ? 'Undo' : 'Restore', true).then(function (yes) { if (yes) run('restore', [r.id], 'Restored.'); });
+        }))));
+    });
+    card.appendChild(t);
+    if (!snapRows.length) card.appendChild(el('p', { class: 'muted', text: 'No changes recorded yet.' }));
   }
 
   boot();

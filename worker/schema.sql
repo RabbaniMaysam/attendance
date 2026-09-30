@@ -18,3 +18,16 @@ CREATE TABLE IF NOT EXISTS log (
 );
 
 CREATE INDEX IF NOT EXISTS log_class ON log (class, id);
+
+-- Before every change, the class state as it was, so the instructor can restore any earlier point.
+CREATE TABLE IF NOT EXISTS snapshots (
+  id     INTEGER PRIMARY KEY AUTOINCREMENT,
+  time   TEXT NOT NULL,
+  class  TEXT NOT NULL,
+  actor  TEXT NOT NULL,
+  action TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '',
+  state  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS snap_class ON snapshots (class, id);

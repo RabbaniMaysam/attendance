@@ -12,7 +12,7 @@
  * second is recomputed against the first one's result and refused.
  */
 
-import { act, view, adminAct, isAdminAction, newClass } from './rules.js';
+import { act, view, adminAct, isAdminAction, newClass, upgrade } from './rules.js';
 import { SEED_DATASETS, SEED_TOPICS } from './seed.js';
 
 const CORS = {
@@ -122,7 +122,7 @@ async function classList(env) {
 async function readClass(env, key) {
   const row = await env.DB.prepare('SELECT version, state FROM classes WHERE key = ?').bind(key).first();
   if (!row) throw new Error('This link does not match any class.');
-  return { version: row.version, state: JSON.parse(row.state) };
+  return { version: row.version, state: upgrade(JSON.parse(row.state)), raw: row.state };
 }
 
 const LOG_SQL = 'INSERT INTO log (time, class, actor, action, detail) ';
@@ -152,13 +152,19 @@ async function mutate(env, key, who, action, args, fn) {
       await logNow(env, key, who, 'refused: ' + action, shown.join(', ') + (shown.length ? ' | ' : '') + err.message);
       throw err;
     }
+    if (!logs.length) return { state: row.state, version: row.version };  // nothing changed
     const stamp = crypto.randomUUID();
     const time = new Date().toISOString();
+    const guard = ' WHERE EXISTS (SELECT 1 FROM classes WHERE key = ? AND stamp = ?)';
     const res = await env.DB.batch([
       env.DB.prepare('UPDATE classes SET state = ?, version = version + 1, stamp = ? WHERE key = ? AND version = ?')
-        .bind(JSON.stringify(row.state), stamp, key, row.version)
+        .bind(JSON.stringify(row.state), stamp, key, row.version),
+      // The state as it was before this change, for the History tab of the instructor page.
+      env.DB.prepare('INSERT INTO snapshots (time, class, actor, action, detail, state) SELECT ?, ?, ?, ?, ?, ?' + guard)
+        .bind(time, key, logs[0].actor, action.replace(/([A-Z])/g, c => ' ' + c.toLowerCase()),
+              logs.map(l => l.detail).join('; ').slice(0, 2000), row.raw, key, stamp)
     ].concat(logs.map(l =>
-      env.DB.prepare(LOG_SQL + 'SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM classes WHERE key = ? AND stamp = ?)')
+      env.DB.prepare(LOG_SQL + 'SELECT ?, ?, ?, ?, ?' + guard)
         .bind(time, key, l.actor, l.action, String(l.detail).slice(0, 2000), key, stamp))));
     if (res[0].meta.changes === 1) return { state: row.state, version: row.version + 1 };
   }
@@ -217,12 +223,34 @@ async function adminCall(env, real, action, key, args) {
     await readClass(env, key);
     await env.DB.batch([
       env.DB.prepare('DELETE FROM classes WHERE key = ?').bind(key),
-      env.DB.prepare('DELETE FROM log WHERE class = ?').bind(key)
+      env.DB.prepare('DELETE FROM log WHERE class = ?').bind(key),
+      env.DB.prepare('DELETE FROM snapshots WHERE class = ?').bind(key)
     ]);
     return { classes: await classList(env) };
   }
 
   if (action === 'get') return await readClass(env, key);
+
+  // Every change saved a snapshot of the state before it. Newest first.
+  if (action === 'snapshots') {
+    const limit = Math.min(Math.max(Number(args[0]) || 300, 1), 5000);
+    const out = await env.DB.prepare(
+      'SELECT id, time, actor, action, detail FROM snapshots WHERE class = ? ORDER BY id DESC LIMIT ?').bind(key, limit).all();
+    return { rows: out.results };
+  }
+
+  // Puts the class back to the state saved in one snapshot. The current state is snapshotted first, so a restore can itself be undone.
+  if (action === 'restore') {
+    const snap = await env.DB.prepare('SELECT id, time, actor, action, detail, state FROM snapshots WHERE class = ? AND id = ?')
+      .bind(key, Number(args[0])).first();
+    if (!snap) throw new Error('That snapshot does not exist.');
+    const old = upgrade(JSON.parse(snap.state));
+    return await mutate(env, key, who, action, [snap.id], s => {
+      Object.keys(s).forEach(k => delete s[k]);
+      Object.assign(s, old);
+      return [{ actor: who, action: 'restore', detail: 'state as of ' + snap.time + ', before "' + snap.action + '" by ' + snap.actor + ' (snapshot ' + snap.id + ')' }];
+    });
+  }
 
   if (action === 'log') {
     const like = '%' + String(args[0] || '').replace(/[%_]/g, '') + '%';

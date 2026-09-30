@@ -275,6 +275,9 @@
     var my = me ? S.groups.filter(function (g) { return g.name === me.group; })[0] : null;
     var canAct = !!me && !S.closed;
     var canClaim = canAct && !!my && me.leader && my.members.length >= S.minToClaim;
+    // An item the instructor set is locked for the group until the instructor undoes it.
+    var lockedD = !!my && my.datasetBy === 'instructor', lockedT = !!my && my.topicBy === 'instructor';
+    var canClaimD = canClaim && !lockedD, canClaimT = canClaim && !lockedT;
     var byCode = function (list, code) { return list.filter(function (x) { return x.code === code; })[0]; };
 
     // ---- header
@@ -377,8 +380,8 @@
           var url = my.ownLink || (d.own ? '' : d.link);
           if (url) box.appendChild(el('p', {}, el('a', { href: url, target: '_blank', rel: 'noopener', text: url })));
           else box.appendChild(el('p', { class: 'muted', text: 'No link is on file for this dataset.' }));
-          if (my.datasetBy === 'instructor') box.appendChild(el('p', { class: 'muted', text: 'Set by the instructor.' }));
-          if (canClaim) box.appendChild(el('div', { class: 'row' },
+          if (my.datasetBy === 'instructor') box.appendChild(el('p', { class: 'muted', text: 'Set by your instructor. Only the instructor can change it.' }));
+          else if (canClaim) box.appendChild(el('div', { class: 'row' },
             el('button', { class: 'switch', text: 'Want to switch to another dataset?', on: { click: open('datasets') } }),
             releaseButton('dataset', d.name)));
           else box.appendChild(el('p', { class: 'muted', text: 'Only the leader, ' + my.leader + ', can switch or release it.' }));
@@ -386,8 +389,8 @@
         }
         if (expanded === 'topic' && t) {
           var tbox = el('div', { class: 'detail' }, el('p', { text: t.description || 'No description.' }));
-          if (my.topicBy === 'instructor') tbox.appendChild(el('p', { class: 'muted', text: 'Set by the instructor.' }));
-          if (canClaim) tbox.appendChild(el('div', { class: 'row' },
+          if (my.topicBy === 'instructor') tbox.appendChild(el('p', { class: 'muted', text: 'Set by your instructor. Only the instructor can change it.' }));
+          else if (canClaim) tbox.appendChild(el('div', { class: 'row' },
             el('button', { class: 'switch', text: 'Want to switch to another topic?', on: { click: open('topics') } }),
             releaseButton('topic', t.topic)));
           else tbox.appendChild(el('p', { class: 'muted', text: 'Only the leader, ' + my.leader + ', can switch or release it.' }));
@@ -461,7 +464,8 @@
     // ---- datasets
     if (page === 'datasets') {
     var dcard = el('div', { class: 'card' }, el('h2', { text: 'Datasets' }));
-    if (canClaim) dcard.appendChild(el('p', { class: 'muted', text: my.dataset === '' ? 'Claim one dataset for your group.' : 'Your group holds the highlighted dataset. Switching releases it.' }));
+    if (lockedD) dcard.appendChild(el('p', { class: 'muted', text: 'Your instructor set the highlighted dataset for your group. Only the instructor can change it.' }));
+    else if (canClaim) dcard.appendChild(el('p', { class: 'muted', text: my.dataset === '' ? 'Claim one dataset for your group.' : 'Your group holds the highlighted dataset. Switching releases it.' }));
     else if (my) dcard.appendChild(el('p', { class: 'muted', text: me.leader ? 'Your group needs ' + S.minToClaim + ' members before you can claim.' : 'Only your group leader can claim.' }));
     var dt = el('table', {}, el('tr', {}, el('th', { text: 'Dataset' }), el('th', { text: 'Status' }), el('th', {})));
     S.datasets.forEach(function (d) {
@@ -470,7 +474,7 @@
       var nameCell = el('td', {},
         d.link && !d.own ? el('a', { href: d.link, target: '_blank', rel: 'noopener', text: d.name }) : el('span', { text: d.name }));
       var input = null;
-      if (d.own && canClaim) {
+      if (d.own && canClaimD) {
         input = el('input', { type: 'url', placeholder: 'Paste the Kaggle link of your dataset',
           value: ownLink || (mine ? my.ownLink : ''),
           on: { input: function (ev) { ownLink = ev.target.value; } } });
@@ -481,7 +485,7 @@
         : takenByOther ? el('span', { class: 'taken', text: 'Claimed by ' + d.claimedBy.join(', ') })
         : el('span', { class: 'tag free', text: d.own ? 'Open to every group' : 'Available' });
       var act = el('td', { class: 'act' });
-      if (canClaim && !d.reserved && !takenByOther && (!mine || d.own)) {
+      if (canClaimD && !d.reserved && !takenByOther && (!mine || d.own)) {
         var replacing = my.dataset !== '' && !mine;
         var current = replacing ? byCode(S.datasets, my.dataset) : null;
         var spec = function () {
@@ -511,7 +515,8 @@
     // ---- topics
     if (page === 'topics') {
     var tcard = el('div', { class: 'card' }, el('h2', { text: 'Presentation topics' }));
-    if (canClaim) tcard.appendChild(el('p', { class: 'muted', text: my.topic === '' ? 'Claim one topic for your group.' : 'Your group holds the highlighted topic. Switching releases it.' }));
+    if (lockedT) tcard.appendChild(el('p', { class: 'muted', text: 'Your instructor set the highlighted topic for your group. Only the instructor can change it.' }));
+    else if (canClaim) tcard.appendChild(el('p', { class: 'muted', text: my.topic === '' ? 'Claim one topic for your group.' : 'Your group holds the highlighted topic. Switching releases it.' }));
     else if (my) tcard.appendChild(el('p', { class: 'muted', text: me.leader ? 'Your group needs ' + S.minToClaim + ' members before you can claim.' : 'Only your group leader can claim.' }));
     var tt = el('table', {}, el('tr', {}, el('th', { text: 'Topic' }), el('th', { text: 'Status' }), el('th', {})));
     S.topics.forEach(function (t) {
@@ -521,7 +526,7 @@
         : takenByOther ? el('span', { class: 'taken', text: 'Claimed by ' + t.claimedBy.join(', ') })
         : el('span', { class: 'tag free', text: 'Available' });
       var act = el('td', { class: 'act' });
-      if (canClaim && !takenByOther && !mine) {
+      if (canClaimT && !takenByOther && !mine) {
         var replacing = my.topic !== '';
         var current = replacing ? byCode(S.topics, my.topic) : null;
         act.appendChild(actionButton(replacing ? 'Switch' : 'Claim',

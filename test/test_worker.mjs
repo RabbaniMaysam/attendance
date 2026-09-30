@@ -103,6 +103,10 @@ ok((await adm('log', ['refused', 1000])).data.rows.length === 18, 'log search');
 // instructor edits, then delete
 r = await adm('setClaim', [names[2], 'topic', '9']);
 ok(r.ok && r.data.state.groups.find(g => g.name === names[2]).topic === '9', 'instructor assigns a topic');
+ok(/instructor set this topic/.test((await stu(2, 'claimTopic', 8)).error), 'forced topic is locked for the group');
+r = await adm('undoClaim', [names[2], 'topic']);
+ok(r.ok && r.data.state.groups.find(g => g.name === names[2]).topicBy === '', 'instructor undoes the forced topic');
+r = await adm('setClaim', [names[2], 'topic', '9']);
 
 // snapshots and restore
 let snaps = (await adm('snapshots', [1000])).data.rows;

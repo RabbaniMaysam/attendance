@@ -459,9 +459,22 @@
         var lines = [];
         if (cur) lines.push('Current ' + kind + ': ' + cur.code + '. ' + labelOf(cur) + ' (' + claimOrigin(g, kind) + ').');
         lines.push(next ? 'New ' + kind + ': ' + next.code + '. ' + labelOf(next) + '.' : 'The group will have no ' + kind + '.');
-        lines.push('This overrides the group\'s own choice; the leader, ' + leadName + ', is not notified. The change is logged and the group sees the new ' + kind + ' on its page.');
+        lines.push(next
+          ? 'This overrides the group\'s own choice and locks it: the group cannot switch or release its ' + kind + ' until you press Undo next to it. The leader, ' + leadName + ', is not notified; the change is logged and the group sees the new ' + kind + ' on its page.'
+          : 'The leader, ' + leadName + ', is not notified. The change is logged and the group may claim a ' + kind + ' again.');
         ask((next ? 'Force a change of ' + kind + ' for ' : 'Release the ' + kind + ' of ') + g.name + '?', lines,
           next ? 'Change ' + kind : 'Release ' + kind, true).then(function (yes) { if (yes) then(next); else render(); });
+      };
+      // While your override stands, the group is locked out of changing the item; Undo restores its own choice.
+      var undoButton = function (kind, items, labelOf) {
+        if (claimBy(g, kind) !== 'instructor') return null;
+        var own = items.filter(function (x) { return x.code === groupChoice(g, kind); })[0];
+        var back = own ? own.code + '. ' + labelOf(own) : 'no ' + kind;
+        return el('div', { style: 'margin-top:4px' }, button('Undo', 'danger', function () {
+          ask('Undo your ' + kind + ' change for ' + g.name + '?',
+            ['The group goes back to ' + back + ' and may switch or release its ' + kind + ' again.'],
+            'Undo', true).then(function (yes) { if (yes) run('undoClaim', [g.name, kind], 'Your ' + kind + ' change for ' + g.name + ' is undone.'); });
+        }), el('span', { class: 'muted', text: ' locked for the group' }));
       };
       var dCell = el('td', {}, select(dOpts, g.dataset, function (v) {
         if (v === g.dataset) return;
@@ -472,6 +485,16 @@
         });
       }));
       if (d && d.own) dCell.appendChild(el('div', { class: 'muted', text: g.ownLink || 'No link' }));
+      var dUndo = undoButton('dataset', C.datasets, function (x) { return x.name; });
+      if (dUndo) dCell.appendChild(dUndo);
+      var tCell = el('td', {}, select(tOpts, g.topic, function (v) {
+        if (v === g.topic) return;
+        forceClaim('topic', C.topics, function (x) { return x.topic; }, v, function () {
+          run('setClaim', [g.name, 'topic', v], 'Topic changed for ' + g.name + '.');
+        });
+      }));
+      var tUndo = undoButton('topic', C.topics, function (x) { return x.topic; });
+      if (tUndo) tCell.appendChild(tUndo);
       t.appendChild(el('tr', {}, el('td', {}, el('b', { text: g.name }), el('div', { class: 'muted', text: 'created ' + when(g.createdAt) })),
         el('td', { text: ms.map(fullName).join(', ') }),
         el('td', {}, select(ms.map(function (r) { return [r.email, fullName(r)]; }), g.leader, function (v) {
@@ -484,12 +507,7 @@
             });
         })),
         dCell,
-        el('td', {}, select(tOpts, g.topic, function (v) {
-          if (v === g.topic) return;
-          forceClaim('topic', C.topics, function (x) { return x.topic; }, v, function () {
-            run('setClaim', [g.name, 'topic', v], 'Topic changed for ' + g.name + '.');
-          });
-        })),
+        tCell,
         el('td', {}, button('Delete', 'danger', function () {
           ask('Delete ' + g.name + '?', ['Its ' + ms.length + ' member(s) stay on the roster without a group. Its dataset and topic are released.'],
             'Delete group', true).then(function (yes) { if (yes) run('deleteGroup', [g.name], g.name + ' deleted.'); });
@@ -498,7 +516,7 @@
     if (C.groups.length) card.appendChild(t);
     card.appendChild(el('p', { class: 'muted', style: 'margin-top:10px' },
       'In the dropdowns, ', el('span', { class: 'swatch byGroup' }), ' marks the group\'s own choice and ', el('span', { class: 'swatch forced' }),
-      ' marks an item you set here in its place; both stay marked until the group chooses again. ',
+      ' marks an item you set here in its place. An item you set is locked for the group, with a red Undo next to it for as long as that stands; Undo restores the group\'s own choice and its freedom to change it. ',
       'To move a student between groups, use the Roster tab. An item claimed by another group is greyed out: release it there first.'));
   }
 

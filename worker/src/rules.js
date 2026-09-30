@@ -6,9 +6,11 @@
  * State of a class:
  *   settings {title, deadline (ISO text or ''), maxSize, minToClaim, maxGroups}
  *   roster   [{first, last, email, group, joinedAt}]
- *   groups   [{name, leader, createdAt, dataset, ownLink, datasetAt, datasetBy, groupDataset, topic, topicAt, topicBy, groupTopic}]
+ *   groups   [{name, leader, createdAt, dataset, ownLink, datasetAt, datasetBy, groupDataset, groupOwnLink, topic, topicAt, topicBy, groupTopic}]
  *            datasetBy/topicBy: 'group' when the leader claimed it, 'instructor' when set on the instructor page.
- *            groupDataset/groupTopic: the code the group itself claimed last, kept when the instructor overrides it.
+ *            An item set by the instructor is locked: the group cannot switch or release it until the instructor undoes it.
+ *            groupDataset/groupOwnLink/groupTopic: what the group itself claimed last, kept when the instructor overrides it
+ *            so the undo can restore it.
  *   requests [{time, email, group, status, decidedAt}]
  *   datasets [{code, name, link, own, reserved}]
  *   topics   [{code, topic, description}]
@@ -63,7 +65,7 @@ function newGroup(s, leader, now) {
   let n = 1;
   while (group(s, 'Group ' + n)) n++;
   const name = 'Group ' + n;
-  s.groups.push({ name: name, leader: leader.email, createdAt: now, dataset: '', ownLink: '', datasetAt: '', datasetBy: '', groupDataset: '',
+  s.groups.push({ name: name, leader: leader.email, createdAt: now, dataset: '', ownLink: '', datasetAt: '', datasetBy: '', groupDataset: '', groupOwnLink: '',
                  topic: '', topicAt: '', topicBy: '', groupTopic: '' });
   setMember(leader, name, now);
   return name;
@@ -105,6 +107,13 @@ function claimingGroup(c) {
     throw new Error('Your group needs at least ' + min + ' members before it can claim a dataset or topic.');
   }
   return g;
+}
+
+/** An item the instructor set stays fixed until the instructor undoes it. */
+function locked(g, kind) {
+  if (g[kind + 'By'] === 'instructor') {
+    throw new Error('Your instructor set this ' + kind + ' for your group. Only the instructor can change it.');
+  }
 }
 
 // ---------------------------------------------------------------- student actions
@@ -174,6 +183,7 @@ const ACTIONS = {
 
   claimDataset(c, code, ownLink) {
     const g = claimingGroup(c);
+    locked(g, 'dataset');
     const d = c.s.datasets.find(x => x.code === String(code));
     if (!d) throw new Error('That dataset does not exist.');
     if (d.reserved) throw new Error('"' + d.name + '" is reserved.');
@@ -185,12 +195,13 @@ const ACTIONS = {
       const holder = c.s.groups.find(x => x.dataset === d.code && x !== g);
       if (holder) throw new Error('"' + d.name + '" was just claimed by ' + holder.name + '. Choose another dataset.');
     }
-    g.dataset = d.code; g.ownLink = link; g.datasetAt = c.now; g.datasetBy = 'group'; g.groupDataset = d.code;
+    g.dataset = d.code; g.ownLink = link; g.datasetAt = c.now; g.datasetBy = 'group'; g.groupDataset = d.code; g.groupOwnLink = link;
     c.log('claim dataset', g.name + ': ' + d.code + ' ' + d.name + (link ? ' ' + link : ''));
   },
 
   claimTopic(c, code) {
     const g = claimingGroup(c);
+    locked(g, 'topic');
     const t = c.s.topics.find(x => x.code === String(code));
     if (!t) throw new Error('That topic does not exist.');
     const holder = c.s.groups.find(x => x.topic === t.code && x !== g);
@@ -202,14 +213,16 @@ const ACTIONS = {
   // Releasing frees the item for any group. It lets two groups swap items when everything is taken.
   releaseDataset(c) {
     const g = claimingGroup(c);
+    locked(g, 'dataset');
     if (g.dataset === '') return;
     const d = c.s.datasets.find(x => x.code === g.dataset);
     c.log('release dataset', g.name + ': ' + g.dataset + ' ' + (d ? d.name : ''));
-    g.dataset = ''; g.ownLink = ''; g.datasetAt = ''; g.datasetBy = ''; g.groupDataset = '';
+    g.dataset = ''; g.ownLink = ''; g.datasetAt = ''; g.datasetBy = ''; g.groupDataset = ''; g.groupOwnLink = '';
   },
 
   releaseTopic(c) {
     const g = claimingGroup(c);
+    locked(g, 'topic');
     if (g.topic === '') return;
     const t = c.s.topics.find(x => x.code === g.topic);
     c.log('release topic', g.name + ': ' + g.topic + ' ' + (t ? t.topic : ''));
@@ -225,6 +238,7 @@ export function upgrade(s) {
       const own = 'group' + k.charAt(0).toUpperCase() + k.slice(1);
       if (g[own] === undefined) g[own] = g[k + 'By'] === 'group' ? g[k] : '';
     });
+    if (g.groupOwnLink === undefined) g.groupOwnLink = g.datasetBy === 'group' ? g.ownLink : '';
   });
   return s;
 }
@@ -454,6 +468,28 @@ const ADMIN = {
       g.topicBy = code ? 'instructor' : '';
     } else throw new Error('Unknown claim type.');
     c.log('set ' + kind, g.name + ': ' + (code || 'released') + (kind === 'dataset' && g.ownLink ? ' ' + g.ownLink : ''));
+  },
+
+  /** Takes back the instructor's choice: the group's own earlier choice returns and the group may change it again. */
+  undoClaim(c, groupName, kind) {
+    const g = group(c.s, groupName);
+    if (!g) throw new Error('That group does not exist.');
+    if (kind !== 'dataset' && kind !== 'topic') throw new Error('Unknown claim type.');
+    if (g[kind + 'By'] !== 'instructor') return;
+    const own = kind === 'dataset' ? g.groupDataset : g.groupTopic;
+    if (kind === 'dataset') {
+      const d = c.s.datasets.find(x => x.code === own);
+      const holder = d && !d.own && c.s.groups.find(x => x.dataset === own && x !== g);
+      if (holder) throw new Error('The group\'s own dataset "' + d.name + '" is now claimed by ' + holder.name + '. Release it there first.');
+      g.dataset = d ? own : ''; g.ownLink = d ? g.groupOwnLink : ''; g.datasetAt = d ? c.now : '';
+      g.datasetBy = d ? 'group' : ''; g.groupDataset = d ? own : ''; g.groupOwnLink = d ? g.groupOwnLink : '';
+    } else {
+      const t = c.s.topics.find(x => x.code === own);
+      const holder = t && c.s.groups.find(x => x.topic === own && x !== g);
+      if (holder) throw new Error('The group\'s own topic "' + t.topic + '" is now claimed by ' + holder.name + '. Release it there first.');
+      g.topic = t ? own : ''; g.topicAt = t ? c.now : ''; g.topicBy = t ? 'group' : ''; g.groupTopic = t ? own : '';
+    }
+    c.log('undo set ' + kind, g.name + ': back to ' + (g[kind] || 'none'));
   },
 
   deleteGroup(c, groupName) {

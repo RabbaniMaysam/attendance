@@ -201,7 +201,8 @@
     app.appendChild(el('p', { class: 'muted' }, S.name + ' (' + S.email + '). ', signOutLink));
     if (flash) app.appendChild(el('div', { class: 'banner err', text: flash }));
     var q = S.question;
-    // Attendance card: the button while the window is open, today's mark once made.
+    // Attendance card: the button while a round is open, the mark once made in that round; earlier marks of the day below.
+    var earlier = S.today.filter(function (t) { return t !== S.marked; });
     if (S.open && !S.marked) {
       var card = el('div', { class: 'card' });
       card.appendChild(el('button', { class: 'big', disabled: busy, text: busy ? 'Recording...' : 'I am here', on: { click: mark } }));
@@ -210,6 +211,9 @@
     } else if (S.marked) {
       app.appendChild(el('div', { class: 'card' },
         el('div', { class: 'done', text: '✓ Present, ' + longDate(S.date) + ', ' + isoClock(S.marked) })));
+    }
+    if (earlier.length) {
+      app.appendChild(el('p', { class: 'muted', style: 'margin-top:10px', text: (S.marked || (S.open && !S.marked) ? 'Earlier today: ' : 'Recorded today: ') + earlier.map(isoClock).join(', ') + '.' }));
     }
     // Question card: big answer buttons while open, the result for a few minutes after it closes.
     if (q) {

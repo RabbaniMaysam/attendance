@@ -51,21 +51,33 @@ r = att.refreshIn(s, edt('2026-10-06', '07:49') + 40000);
 ok(r > 19000 && r < 21000, 'refresh at the open time when it is under 30 s away: ' + r);
 ok(att.refreshIn(s, edt('2026-10-06', '11:00')) === 30000, 'idle rate when the next window is days away');
 w = att.windowAt(s, edt('2026-10-06', '07:55') + 20000);
-ok(w.closesAt === new Date(edt('2026-10-06', '08:01')).toISOString(), 'closesAt is the instant the window closes');
+ok(w.id === '2026-10-06 07:50' && w.closesAt === new Date(edt('2026-10-06', '08:01')).toISOString(), 'the open round has an id and the instant it closes');
 
-// close now: the weekly window ends at this minute; the day stays in the grid; a later "open now" reopens
+// close now: the weekly round ends at this minute; it stays in the grid; "open now" starts a new round
 throws(() => att.ADMIN.closeNow(s, edt('2026-10-06', '07:40')), /not open/, 'close now refused while closed');
 att.ADMIN.closeNow(s, edt('2026-10-06', '07:55') + 30000);
-ok(s.cutoff.date === '2026-10-06' && s.cutoff.close === '07:55' && att.windowAt(s, edt('2026-10-06', '07:55') + 31000) === null, 'closed at this minute');
+ok(s.closed['2026-10-06 07:50'] === '07:55' && att.windowAt(s, edt('2026-10-06', '07:55') + 31000) === null, 'closed at this minute');
 ok(att.windowsOn(s, '2026-10-06', 2)[0].close === '07:55' && att.nextWindow(s, edt('2026-10-06', '07:56')).date === '2026-10-08', 'window shortened; next is Thursday');
 ok(att.windowAt(s, edt('2026-10-08', '07:55')) !== null, 'other days unaffected');
-att.ADMIN.addExtra(s, '2026-10-06', '07:58', '08:10');
-ok(s.cutoff === null && att.windowAt(s, edt('2026-10-06', '08:05')).close === '08:10', 'open now after an early close reopens');
-att.ADMIN.closeNow(s, edt('2026-10-06', '07:50') + 5000);
-ok(att.windowAt(s, edt('2026-10-06', '07:50') + 6000) === null && att.windowsOn(s, '2026-10-06', 2).length === 2
-  && att.windowsOn(s, '2026-10-06', 2)[1].close === '07:58' && att.nextWindow(s, edt('2026-10-06', '07:52')).date === '2026-10-08',
-  'closing in the opening minute: zero-length windows, listed for the grid but never next');
-s.cutoff = null; s.extra = [];
+att.ADMIN.openNow(s, 10, edt('2026-10-06', '07:58') + 5000);
+w = att.windowAt(s, edt('2026-10-06', '08:05'));
+ok(w.id === '2026-10-06 07:58' && w.close === '08:08' && s.closed['2026-10-06 07:50'] === '07:55', 'open now after an early close: a second round');
+throws(() => att.ADMIN.openNow(s, 5, edt('2026-10-06', '07:58') + 40000), /this minute/, 'a second round in the same minute refused');
+att.ADMIN.openNow(s, 5, edt('2026-10-06', '08:00') + 5000);
+ok(s.closed['2026-10-06 07:58'] === '08:00' && att.windowAt(s, edt('2026-10-06', '08:03')).id === '2026-10-06 08:00' && s.extra.length === 2,
+  'open now while a round is open: closes it and starts a third round');
+// Close in the opening minute: the round is zero-length, listed for the grid but never open or next.
+att.ADMIN.closeNow(s, edt('2026-10-06', '08:00') + 20000);
+ok(att.windowAt(s, edt('2026-10-06', '08:00') + 30000) === null && att.windowsOn(s, '2026-10-06', 2).length === 3
+  && att.windowsOn(s, '2026-10-06', 2)[2].close === '08:00' && att.nextWindow(s, edt('2026-10-06', '07:59')).date === '2026-10-08', 'closing in the opening minute');
+let rd = att.rounds(s, ['2026-09-30 20:17'], edt('2026-10-06', '08:30'));
+ok(rd.slice(-5).map(x => x.id).join('|') === '2026-09-30 20:17|2026-10-01 07:50|2026-10-06 07:50|2026-10-06 07:58|2026-10-06 08:00'
+  && rd.find(x => x.id === '2026-09-30 20:17').close === '' && rd.find(x => x.id === '2026-10-06 07:50').close === '07:55',
+  'rounds: a round with marks only, the scheduled rounds through now, three rounds on one day: ' + rd.map(x => x.id).join('|'));
+ok(att.rounds(s, [], edt('2026-10-06', '07:49')).slice(-1)[0].id === '2026-10-01 07:50', 'a round is listed once it opens');
+att.ADMIN.removeExtra(s, '2026-10-06', '08:00');
+ok(s.extra.length === 1 && !s.closed['2026-10-06 08:00'], 'one extra round removed by date and opening time');
+s.closed = {}; s.extra = [];
 
 // settings: skip a holiday, semester bounds, validation
 att.ADMIN.saveSettings(s, { title: 'ECON 101', days: [2, 4], open: '07:50', close: '08:01', start: '2026-09-01', end: '2026-12-15', skip: '2026-11-26, 2026-10-08' });
@@ -79,25 +91,33 @@ throws(() => att.ADMIN.saveSettings(s, { title: '', days: [2], open: '07:50', cl
 // extra window on a Wednesday, and "open now"
 att.ADMIN.addExtra(s, '2026-10-07', '13:00', '13:10');
 ok(att.windowAt(s, edt('2026-10-07', '13:05')) !== null && att.windowAt(s, edt('2026-10-07', '13:10')) === null, 'extra window opens and closes');
-att.ADMIN.removeExtra(s, '2026-10-07');
+att.ADMIN.removeExtra(s, '2026-10-07', '13:00');
 ok(att.windowAt(s, edt('2026-10-07', '13:05')) === null, 'extra window removed');
-w = att.openNowWindow(edt('2026-10-07', '14:03') + 5000, 10);
+att.ADMIN.openNow(s, 10, edt('2026-10-07', '14:03') + 5000);
+w = s.extra[0];
 ok(w.date === '2026-10-07' && w.open === '14:03' && w.close === '14:13', 'open now for 10 minutes: ' + JSON.stringify(w));
+s.extra = [];
 
-// session dates: scheduled Tue/Thu from the start through today, minus the holiday, plus dates with marks
-let dates = att.sessionDates(s, ['2026-09-30'], edt('2026-10-13', '12:00'));
-ok(dates[0] === '2026-09-01' && dates.indexOf('2026-09-30') !== -1 && dates.indexOf('2026-10-08') === -1 && dates[dates.length - 1] === '2026-10-13' && dates.length === 13,
-  'session dates: ' + dates.join(' '));
+// rounds: scheduled Tue/Thu from the start through today, minus the holiday, plus rounds with marks
+let dates = att.rounds(s, ['2026-09-30 20:17'], edt('2026-10-13', '12:00')).map(x => x.id);
+ok(dates[0] === '2026-09-01 07:50' && dates.indexOf('2026-09-30 20:17') !== -1 && dates.indexOf('2026-10-08 07:50') === -1 && dates[dates.length - 1] === '2026-10-13 07:50' && dates.length === 13,
+  'rounds: ' + dates.join(' '));
 
 // roster and student view
 att.ADMIN.importRoster(s, 'Email,First Name,Last Name\nB@X.EDU,Bea,Zeta\na@x.edu,Al,Alpha\n\na@x.edu,Dup,Dup');
 ok(s.roster.length === 2 && s.roster[0].email === 'a@x.edu' && s.roster[1].last === 'Zeta', 'roster import: lowercased, deduplicated, sorted by last name');
 let v = att.studentView(s, 'nobody@x.edu', null, edt('2026-10-06', '07:55'));
 ok(v.authorized === false, 'unknown account refused');
-v = att.studentView(s, 'a@x.edu', null, edt('2026-10-06', '07:55'));
+v = att.studentView(s, 'a@x.edu', [], edt('2026-10-06', '07:55'));
 ok(v.authorized && v.name === 'Al Alpha' && v.open && v.open.close === '08:01' && v.marked === '' && v.next === null, 'student view while open');
-v = att.studentView(s, 'a@x.edu', { time: '2026-10-06T11:52:00Z' }, edt('2026-10-06', '08:30'));
-ok(!v.open && v.marked === '2026-10-06T11:52:00Z' && v.next.date === '2026-10-13', 'student view after closing, marked, next window shown');
+v = att.studentView(s, 'a@x.edu', [{ round: '2026-10-06 07:50', time: '2026-10-06T11:52:00Z' }], edt('2026-10-06', '07:56'));
+ok(v.marked === '2026-10-06T11:52:00Z' && v.today.length === 1, 'student view: marked in the open round');
+att.ADMIN.openNow(s, 5, edt('2026-10-06', '08:30'));
+v = att.studentView(s, 'a@x.edu', [{ round: '2026-10-06 07:50', time: '2026-10-06T11:52:00Z' }], edt('2026-10-06', '08:31'));
+ok(v.open && v.open.id === '2026-10-06 08:30' && v.marked === '' && v.today.length === 1, 'student view: a new round, the button is back, the earlier mark listed');
+s.extra = [];
+v = att.studentView(s, 'a@x.edu', [{ round: '2026-10-06 07:50', time: '2026-10-06T11:52:00Z' }], edt('2026-10-06', '08:40'));
+ok(!v.open && v.marked === '' && v.today[0] === '2026-10-06T11:52:00Z' && v.next.date === '2026-10-13', 'student view after closing: today\'s mark, next window shown');
 
 // Canvas export and the two Montclair domains
 att.ADMIN.importRoster(s, 'Student,SIS Login ID,Quiz 1\n"    Points Possible",,10\n"Student, Test",843b2ebf97d6dff55e1ba2ce8c7910f987d72b05,\n"Lafontaine Medina, Elian",lafontaineme1,\n"Khan, Jubair",khanj6,');

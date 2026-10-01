@@ -8,12 +8,13 @@
  *   roster     [{first, last, email}]
  *   schedule   {days: [0-6, 0 = Sunday], open: 'HH:MM', close: 'HH:MM', start: 'YYYY-MM-DD' or '', end: 'YYYY-MM-DD' or ''}
  *   skip       ['YYYY-MM-DD', ...]   scheduled days with no class (holidays)
- *   extra      [{date, open, close}] one-off windows (a moved class, or "open now")
- *   cutoff     {date, close} or null  "close now": on that date no window stays open past close (HH:MM)
+ *   extra      [{date, open, close}] one-off windows (a moved class, or "open now"); several per date allowed
+ *   closed     {round id: 'HH:MM'}  windows closed early ("close now", or superseded by "open now")
  *   questions  [{id, kind: 'tf' | 'yn' | 'mc', n, text, correct, opened, closes}]  in-class questions, oldest first;
  *              times are ISO instants; a question is open while now < closes. Answers are rows of att_answers.
- * All clock times are New York local time. Marks are stored separately (att_marks), keyed by
- * date and email, whichever window (weekly or one-off) they were made in.
+ * All clock times are New York local time. Every window is one attendance round, identified by
+ * 'YYYY-MM-DD HH:MM' (its date and opening time); marks are rows of att_marks keyed by round and
+ * email, so a day with three windows has three rounds and three columns in the grid.
  */
 
 import { parseRoster, canonEmail } from './rules.js';
@@ -44,10 +45,11 @@ export const DEFAULT_SKIP = ['2026-10-06', '2026-10-20', '2026-10-22', '2026-11-
 
 export function newAttClass(title, nowMs) {
   return { title: title, createdAt: nyParts(nowMs).date, roster: [],
-           schedule: Object.assign({}, DEFAULT_SCHEDULE), skip: DEFAULT_SKIP.slice(), extra: [], cutoff: null, questions: [] };
+           schedule: Object.assign({}, DEFAULT_SCHEDULE), skip: DEFAULT_SKIP.slice(), extra: [], closed: {}, questions: [] };
 }
 
 const hhmm = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+export const roundId = (date, open) => date + ' ' + open;
 
 // ---------------------------------------------------------------- in-class questions
 
@@ -65,7 +67,11 @@ function questionView(q, answer, ms) {
            answered: answer ? answer.answer : '', correct: open ? '' : q.correct };
 }
 
-/** The attendance windows on one New York date, earliest first. */
+/**
+ * The attendance windows (rounds) on one New York date, earliest first: {id, date, open, close, extra}.
+ * A window closed early keeps its id and date but ends at the recorded minute (a zero-length window
+ * when closed in its opening minute: listed for the grid, never open).
+ */
 export function windowsOn(s, date, weekday) {
   const out = s.extra.filter(x => x.date === date).map(x => ({ open: x.open, close: x.close, extra: true }));
   const sch = s.schedule;
@@ -73,20 +79,21 @@ export function windowsOn(s, date, weekday) {
       (!sch.start || date >= sch.start) && (!sch.end || date <= sch.end)) {
     out.push({ open: sch.open, close: sch.close, extra: false });
   }
-  // Closed early: the window ends at the cutoff (a window the cutoff precedes keeps its date in the grid, with no open minute).
-  if (s.cutoff && s.cutoff.date === date) {
-    out.forEach(x => { if (toMin(x.close) > toMin(s.cutoff.close)) x.close = hhmm(Math.max(toMin(x.open), toMin(s.cutoff.close))); });
-  }
-  return out.sort((a, b) => toMin(a.open) - toMin(b.open));
+  out.forEach(x => {
+    x.id = roundId(date, x.open); x.date = date;
+    const early = s.closed[x.id];
+    if (early && toMin(early) < toMin(x.close)) x.close = hhmm(Math.max(toMin(x.open), toMin(early)));
+  });
+  return out.sort((a, b) => toMin(a.open) - toMin(b.open) || (a.extra ? 1 : -1));
 }
 
-/** The window open at ms, or null. closesAt: the ISO instant it closes. */
+/** The window open at ms (the latest-opened one when two overlap), or null. closesAt: the ISO instant it closes. */
 export function windowAt(s, ms) {
   const p = nyParts(ms);
-  const w = windowsOn(s, p.date, p.weekday).find(x => p.minutes >= toMin(x.open) && p.minutes < toMin(x.close));
+  const w = windowsOn(s, p.date, p.weekday).filter(x => p.minutes >= toMin(x.open) && p.minutes < toMin(x.close)).pop();
   if (!w) return null;
   // Time zone offsets are whole minutes, so the seconds within the UTC minute are the seconds within the New York minute.
-  return { date: p.date, open: w.open, close: w.close, closesAt: new Date(ms + (toMin(w.close) - p.minutes) * 60000 - ms % 60000).toISOString() };
+  return { id: w.id, date: p.date, open: w.open, close: w.close, closesAt: new Date(ms + (toMin(w.close) - p.minutes) * 60000 - ms % 60000).toISOString() };
 }
 
 /** The next window that opens after ms, within 70 days, or null. */
@@ -106,45 +113,44 @@ export function nextWindow(s, ms) {
 
 /**
  * Milliseconds until the student page should reload. While a question is open: 3 s. During class
- * (from the day's first window until 2 hours after it opens): 8 s, so a new question appears quickly.
- * Otherwise the moment the attendance window opens or closes, at most 30 s away, so an "open now"
- * or "close now" outside class shows within half a minute.
+ * (while a window is open, and for 2 hours after any window of the day opened): 8 s, so a new
+ * round or question appears quickly. Otherwise the moment the next window opens, at most 30 s
+ * away, so an "open now" outside class shows within half a minute.
  */
 const IDLE = 30000;
 export function refreshIn(s, ms) {
   if (openQuestion(s, ms)) return 3000;
   const now = nyParts(ms);
-  const secs = ms % 60000;
-  const open = windowAt(s, ms);
-  const first = windowsOn(s, now.date, now.weekday)[0];
-  if (first && now.minutes >= toMin(first.open) && now.minutes < toMin(first.open) + 120) return 8000;
-  let target;
-  if (open) target = (toMin(open.close) - now.minutes) * 60000 - secs;
-  else {
-    const nx = nextWindow(s, ms);
-    if (!nx) return IDLE;
-    target = nx.daysAhead * 86400000 + (toMin(nx.open) - now.minutes) * 60000 - secs;
-  }
+  if (windowAt(s, ms)) return 8000;
+  if (windowsOn(s, now.date, now.weekday).some(w => now.minutes >= toMin(w.open) && now.minutes < toMin(w.open) + 120)) return 8000;
+  const nx = nextWindow(s, ms);
+  if (!nx) return IDLE;
+  const target = nx.daysAhead * 86400000 + (toMin(nx.open) - now.minutes) * 60000 - ms % 60000;
   return Math.max(1000, Math.min(target + 500, IDLE));
 }
 
-/** All class dates from the semester start (or the class creation) through today, plus dates that have marks. */
-export function sessionDates(s, markDates, ms) {
-  const today = nyParts(ms).date;
-  const first = s.schedule.start || s.createdAt || today;
+/**
+ * All rounds that have opened, from the semester start (or the class creation) through now, plus
+ * rounds that have marks (their window may since have been removed): [{id, date, open, close}], oldest first.
+ */
+export function rounds(s, markRounds, ms) {
+  const now = nyParts(ms);
+  const first = s.schedule.start || s.createdAt || now.date;
   const set = {};
-  markDates.forEach(d => { set[d] = true; });
+  markRounds.forEach(id => { set[id] = { id: id, date: id.slice(0, 10), open: id.slice(11), close: '' }; });
   // Walk day by day from the first date to today (at most a year).
   const t0 = Date.parse(first + 'T12:00:00Z');
   if (!isNaN(t0)) {
     for (let k = 0; k < 370; k++) {
       const d = new Date(t0 + k * 86400000).toISOString().slice(0, 10);
-      if (d > today) break;
+      if (d > now.date) break;
       const wd = new Date(t0 + k * 86400000).getUTCDay();
-      if (windowsOn(s, d, wd).length) set[d] = true;
+      windowsOn(s, d, wd).forEach(w => {
+        if (d < now.date || toMin(w.open) <= now.minutes) set[w.id] = { id: w.id, date: d, open: w.open, close: w.close };
+      });
     }
   }
-  return Object.keys(set).sort();
+  return Object.keys(set).sort().map(id => set[id]);
 }
 
 export function student(s, email) { return s.roster.find(r => r.email === canonEmail(email)) || null; }
@@ -153,20 +159,22 @@ export const fullName = r => (r.first + ' ' + r.last).trim();
 // ---------------------------------------------------------------- student view
 
 /**
- * Everything the student page displays. mark: the student's own mark for today, or null;
+ * Everything the student page displays. marks: the student's own marks of today's rounds [{round, time}];
  * answerOf(id): the student's own answer row for a question, or null.
  */
-export function studentView(s, email, mark, ms, answerOf) {
+export function studentView(s, email, marks, ms, answerOf) {
   const me = student(s, email);
   if (!me) return { authorized: false, email: email, title: s.title };
   const open = windowAt(s, ms);
+  const mine = open ? (marks || []).find(m => m.round === open.id) : null;
   // The open question, or the one that closed in the last 3 minutes (so the result stays on screen briefly).
   const q = openQuestion(s, ms) || s.questions.filter(x => ms - Date.parse(x.closes) < 180000).slice(-1)[0] || null;
   return {
     authorized: true, email: email, name: fullName(me), title: s.title,
     date: nyParts(ms).date,
-    open: open,                                   // {date, open, close} or null
-    marked: mark ? mark.time : '',                // ISO time of today's mark, or ''
+    open: open,                                   // {id, date, open, close, closesAt} or null
+    marked: mine ? mine.time : '',                // ISO time of the mark in the open round, or ''
+    today: (marks || []).map(m => m.time).sort(), // ISO times of all of today's marks
     next: open ? null : nextWindow(s, ms),
     question: q ? questionView(q, answerOf ? answerOf(q.id) : null, ms) : null,
     refreshIn: refreshIn(s, ms)
@@ -203,25 +211,39 @@ export const ADMIN = {
     s.skip = skip.filter((d, i) => skip.indexOf(d) === i).sort();
   },
 
-  /** A one-off window on one date, for a moved class or "open now". Replaces any extra window on that date. */
+  /** A one-off window (a new round) on one date, for a moved class or "open now". Replaces an extra window with the same opening time. */
   addExtra(s, date, open, close) {
     date = text(date); open = text(open); close = text(close);
     if (!isDate(date)) throw new Error('The date must be YYYY-MM-DD.');
     if (!isTime(open) || !isTime(close) || toMin(close) <= toMin(open)) throw new Error('Times must be HH:MM with close after open.');
-    s.extra = s.extra.filter(x => x.date !== date).concat([{ date: date, open: open, close: close }]).sort((a, b) => (a.date < b.date ? -1 : 1));
-    if (s.cutoff && s.cutoff.date === date) s.cutoff = null;  // a new window on the day undoes an early close
+    open = hhmm(toMin(open)); close = hhmm(toMin(close));
+    s.extra = s.extra.filter(x => !(x.date === date && x.open === open)).concat([{ date: date, open: open, close: close }])
+      .sort((a, b) => (roundId(a.date, a.open) < roundId(b.date, b.open) ? -1 : 1));
+    delete s.closed[roundId(date, open)];
   },
 
-  /** "Close now": ends the open window at this minute. Marks made so far are kept. */
+  /** "Open now": closes the open round, if any, and starts a new one from this minute for `minutes` minutes. */
+  openNow(s, minutes, nowMs) {
+    const n = Math.min(Math.max(Number(minutes) || 0, 1), 600);
+    const p = nyParts(nowMs);
+    const open = windowAt(s, nowMs);
+    if (open && open.open === hhmm(p.minutes)) throw new Error('A round opened this minute; wait for the next minute to open another.');
+    if (open) s.closed[open.id] = hhmm(p.minutes);
+    ADMIN.addExtra(s, p.date, hhmm(p.minutes), hhmm(Math.min(p.minutes + n, 1439)));
+  },
+
+  /** "Close now": ends the open round at this minute. Marks made so far are kept. */
   closeNow(s, nowMs) {
     const open = windowAt(s, nowMs);
     if (!open) throw new Error('Attendance is not open.');
-    s.cutoff = { date: open.date, close: hhmm(nyParts(nowMs).minutes) };
+    s.closed[open.id] = hhmm(nyParts(nowMs).minutes);
   },
 
-  /** Removes the one-off window on a date. Marks made in it stay in att_marks and in the grid. */
-  removeExtra(s, date) {
-    s.extra = s.extra.filter(x => x.date !== text(date));
+  /** Removes a one-off window. Marks made in it stay in att_marks and in the grid. */
+  removeExtra(s, date, open) {
+    date = text(date); open = text(open);
+    s.extra = s.extra.filter(x => !(x.date === date && (!open || x.open === open)));
+    delete s.closed[roundId(date, open)];
   },
 
   /** Replaces the roster (layouts: see parseRoster in rules.js). Marks of dropped students are kept in att_marks. */
@@ -315,17 +337,10 @@ function sortRoster(s) {
   s.roster.sort((a, b) => (a.last + ' ' + a.first).toLowerCase() < (b.last + ' ' + b.first).toLowerCase() ? -1 : 1);
 }
 
-/** "Open now for N minutes": an extra window on today's date from now. Returns the window. */
-export function openNowWindow(nowMs, minutes) {
-  const n = Math.min(Math.max(Number(minutes) || 0, 1), 600);
-  const p = nyParts(nowMs);
-  return { date: p.date, open: hhmm(p.minutes), close: hhmm(Math.min(p.minutes + n, 1439)) };
-}
-
 /** Fills in fields added later. */
 export function upgradeAtt(s) {
-  s.roster = s.roster || []; s.skip = s.skip || []; s.extra = s.extra || []; s.questions = s.questions || []; s.cutoff = s.cutoff || null;
+  s.roster = s.roster || []; s.skip = s.skip || []; s.extra = s.extra || []; s.questions = s.questions || []; s.closed = s.closed || {};
   s.schedule = Object.assign({}, DEFAULT_SCHEDULE, s.schedule || {});
-  delete s.sessions;
+  delete s.sessions; delete s.cutoff;
   return s;
 }

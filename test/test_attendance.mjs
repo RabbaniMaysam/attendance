@@ -213,5 +213,64 @@ rp = att.report(g, rl, [{ round: '2026-09-01 07:50', email: 'a@x.edu', present: 
 ok(Math.abs(rp.perSession - 0.2) < 1e-9 && Math.abs(rp.total - 1.6) < 1e-9 && Math.abs(rp.students['a@x.edu'].points - 0.2) < 1e-9 && Math.abs(rp.students['a@x.edu'].possible - 0.6) < 1e-9,
   'per-session mode: 0.2 per session, 1.6 for the semester, 0.6 possible after three sessions');
 
+// ---- excluded dates: out of the sessions, the counts, and the points; marks kept; reversible
+g.points = { mode: 'total', value: 7 };
+att.ADMIN.removeExtra(g, '2026-09-10', '09:00');
+att.ADMIN.excludeDate(g, '2026-09-10');
+att.ADMIN.excludeDate(g, '2026-09-10');
+ok(g.exclude.join() === '2026-09-10' && !att.counts(g, '2026-09-10') && att.counts(g, '2026-09-03'), 'a date is excluded once');
+throws(() => att.ADMIN.excludeDate(g, 'Sep 10'), /YYYY-MM-DD/, 'a bad date is refused');
+sd = att.sessionDates(g, [], mid);
+ok(sd.length === 7 && sd.indexOf('2026-09-10') === -1, 'an excluded date is not a session');
+rl = att.rounds(g, [], mid);
+ok(rl.length === 3, 'the round of the excluded date is still listed for the grid');
+rp = att.report(g, rl, [{ round: '2026-09-10 07:50', email: 'a@x.edu', present: 1 }, { round: '2026-09-01 07:50', email: 'a@x.edu', present: 1 }], mid);
+ok(Math.abs(rp.perSession - 1) < 1e-9 && rp.students['a@x.edu'].present === 1 && rp.students['a@x.edu'].rounds === 2 && Math.abs(rp.students['a@x.edu'].points - 1) < 1e-9
+  && Math.abs(rp.students['a@x.edu'].possible - 2) < 1e-9 && rp.sessions.every(x => x.date !== '2026-09-10'),
+  '7 points over 7 sessions; the excluded round counts nowhere: 1 of 2 rounds, 1 point of 2 possible');
+att.ADMIN.includeDate(g, '2026-09-10');
+throws(() => att.ADMIN.includeDate(g, '2026-09-10'), /not excluded/, 'including a counted date is refused');
+ok(att.sessionDates(g, [], mid).length === 8 && att.report(g, rl, [{ round: '2026-09-10 07:50', email: 'a@x.edu', present: 1 }], mid).students['a@x.edu'].present === 1, 'included again: the date and its marks count');
+ok(att.upgradeAtt({ title: 'x' }).exclude.length === 0 && att.upgradeAtt({ title: 'x' }).code === true && att.upgradeAtt({ title: 'x', code: false }).code === false, 'upgrade adds exclude and the code setting');
+
+// ---- extending an open round (scheduled or one-off)
+const during = edt('2026-09-15', '08:00');
+ok(att.windowAt(g, during).close === '08:05', 'scheduled round open, closes 08:05');
+att.ADMIN.extendNow(g, 10, during);
+ok(att.windowAt(g, during).close === '08:15' && g.extended['2026-09-15 07:50'] === '08:15', 'extended by 10 minutes');
+att.ADMIN.extendNow(g, 5, during);
+ok(att.windowAt(g, during).close === '08:20', 'extended again, from the extended close');
+ok(att.windowAt(g, edt('2026-09-15', '08:18')) !== null && att.windowAt(g, edt('2026-09-15', '08:20')) === null, 'open until the new close');
+ok(att.windowAt(g, edt('2026-09-22', '08:10')) === null, 'the next week\'s round is not extended');
+throws(() => att.ADMIN.extendNow(g, 5, edt('2026-09-15', '08:30')), /not open/, 'extend refused when closed');
+throws(() => att.ADMIN.extendNow(g, 0, during), /1 to 600/, 'zero minutes refused');
+att.ADMIN.closeNow(g, edt('2026-09-15', '08:10'));
+ok(att.windowAt(g, edt('2026-09-15', '08:12')) === null && att.windowsOn(g, '2026-09-15', 2)[0].close === '08:10', 'closed early after an extension: ends at the early close');
+att.ADMIN.openNow(g, 5, edt('2026-09-16', '23:57'));
+att.ADMIN.extendNow(g, 60, edt('2026-09-16', '23:58'));
+ok(att.windowAt(g, edt('2026-09-16', '23:58')).close === '23:59', 'an extension stops at 23:59');
+att.ADMIN.removeExtra(g, '2026-09-16', '23:57');
+ok(!('2026-09-16 23:57' in g.extended), 'removing the window drops its extension');
+
+// ---- session codes: 4 digits, fixed per round, different between rounds and classes, off when the setting is off
+const c1 = att.sessionCode(g, '2026-09-15 07:50');
+ok(/^\d{4}$/.test(c1) && c1 === att.sessionCode(g, '2026-09-15 07:50'), 'a 4-digit code, the same on every call: ' + c1);
+const many = ['2026-09-01 07:50', '2026-09-03 07:50', '2026-09-10 07:50', '2026-09-22 07:50', '2026-09-29 07:50'].map(id => att.sessionCode(g, id));
+ok(many.filter((c, i) => many.indexOf(c) === i).length >= 4, 'codes differ between rounds: ' + many.join(' '));
+const g2 = att.newAttClass('Other', mid);
+ok(g2.secret.length === 32 && g2.secret !== g.secret, 'each class has its own secret');
+ok(att.studentView(g, 'a@x.edu', [], during).needCode === true, 'the student view says a code is needed');
+throws(() => att.checkCode(g, { id: '2026-09-15 07:50' }, '0000' === c1 ? '0001' : '0000'), /Wrong session code/, 'a wrong code is refused');
+throws(() => att.checkCode(g, { id: '2026-09-15 07:50' }, ''), /Wrong session code/, 'an empty code is refused');
+att.checkCode(g, { id: '2026-09-15 07:50' }, ' ' + c1 + ' ');
+ok(true, 'the right code passes (spaces ignored)');
+att.ADMIN.saveSettings(g, { title: 'ECON 102', days: [2, 4], open: '07:50', close: '08:05', start: '2026-09-01', end: '2026-09-29', skip: '2026-09-08', code: false });
+att.checkCode(g, { id: '2026-09-15 07:50' }, '');
+ok(g.code === false && att.studentView(g, 'a@x.edu', [], during).needCode === false, 'codes switched off: nothing is checked');
+att.ADMIN.saveSettings(g, { title: 'ECON 102', days: [2, 4], open: '07:50', close: '08:05', start: '2026-09-01', end: '2026-09-29', skip: '2026-09-08' });
+ok(g.code === false, 'saving without the code field keeps the setting');
+att.ADMIN.noteBackup(g, mid);
+ok(g.backupAt === new Date(mid).toISOString(), 'backup noted');
+
 console.log('passed', pass, 'failed', fail);
 process.exit(fail ? 1 : 0);

@@ -291,7 +291,9 @@ async function attClassList(env) {
 async function readAtt(env, key) {
   const row = await env.DB.prepare('SELECT state FROM att_classes WHERE key = ?').bind(key).first();
   if (!row) throw new Error('This link does not match any class.');
-  return att.upgradeAtt(JSON.parse(row.state));
+  const s = att.upgradeAtt(JSON.parse(row.state));
+  if (!s.secret) { s.secret = att.randomSecret(); await writeAtt(env, key, s); }  // a class created before session codes
+  return s;
 }
 
 function writeAtt(env, key, s) {
@@ -310,6 +312,7 @@ async function attStudentCall(env, real, action, key, args) {
       if (!att.student(s, real)) throw new Error('This account is not on the class roster.');
       const open = att.windowAt(s, now);
       if (!open) throw new Error('Attendance is not open right now.');
+      att.checkCode(s, open, args[0]);
       // The first press sets self; a later press (also after the instructor set the student absent) makes the round present again.
       const res = await env.DB.prepare('INSERT INTO att_marks (class, round, email, self, present) VALUES (?, ?, ?, ?, 1) '
         + 'ON CONFLICT (class, round, email) DO UPDATE SET self = COALESCE(self, excluded.self), present = 1 WHERE present = 0')
@@ -334,7 +337,7 @@ async function attStudentCall(env, real, action, key, args) {
   return att.studentView(s, real, marks, now, id => answers.find(a => a.qid === id) || null);
 }
 
-const ATT_READS = { whoami: 1, get: 1, log: 1 };
+const ATT_READS = { whoami: 1, get: 1, log: 1, export: 1 };
 
 /** Every instructor action except reads is logged (actor "email (instructor)"); a refused one is logged with its reason. */
 async function attAdminCall(env, real, action, key, args) {
@@ -392,6 +395,15 @@ async function attAdminDo(env, real, who, action, key, args) {
   const name = e => { const r = att.student(s, e); return r ? att.fullName(r) + ' (' + e + ')' : e; };
   const logs = [];  // [action, detail] lines written after the change succeeds
 
+  // Everything stored about the class, for a full download (the secret stays out).
+  if (action === 'export') {
+    const state = Object.assign({}, s); delete state.secret;
+    return { exportedAt: new Date(now).toISOString(), key: key, state: state,
+             marks: (await env.DB.prepare('SELECT round, email, self, present, edited, by FROM att_marks WHERE class = ? ORDER BY round, email').bind(key).all()).results,
+             answers: (await env.DB.prepare('SELECT qid, email, answer, time FROM att_answers WHERE class = ? ORDER BY qid, email').bind(key).all()).results,
+             log: (await env.DB.prepare('SELECT id, time, actor, action, detail FROM log WHERE class = ? ORDER BY id').bind('att:' + key).all()).results };
+  }
+
   if (action === 'setMark' || action === 'setMarks') {
     // Instructor override: present (true) or absent (false) per student and round; setMarks takes a list of [round, email, present].
     // Refused while a round is open, so that changes are made after the fact (the page saves them as a batch).
@@ -426,6 +438,15 @@ async function attAdminDo(env, real, who, action, key, args) {
     att.ADMIN.closeNow(s, now);
     await writeAtt(env, key, s);
     logs.push(['close now', 'round ' + open.id + ', closed at ' + s.closed[open.id]]);
+  } else if (action === 'extendNow') {
+    att.ADMIN.extendNow(s, args[0], now);
+    const open = att.windowAt(s, now);
+    await writeAtt(env, key, s);
+    logs.push(['extend', 'round ' + open.id + ' by ' + args[0] + ' min, until ' + open.close]);
+  } else if (action === 'noteBackup') {
+    att.ADMIN.noteBackup(s, now);
+    await writeAtt(env, key, s);
+    logs.push(['note backup', String(args[0] || 'downloaded')]);
   } else if (action === 'askQuestion') {
     const q = att.ADMIN.askQuestion(s, args[0], args[1], args[2], args[3], args[4], now);
     await writeAtt(env, key, s);
@@ -453,10 +474,10 @@ async function attAdminDo(env, real, who, action, key, args) {
     logs.push(['import roster', after.length + ' students; added: ' + (after.filter(e => before.indexOf(e) === -1).join(', ') || 'none')
       + '; dropped: ' + (before.filter(e => after.indexOf(e) === -1).join(', ') || 'none')]);
   } else if (action === 'saveSettings') {
-    const before = JSON.stringify({ t: s.title, sch: s.schedule, skip: s.skip, p: s.points });
+    const before = JSON.stringify({ t: s.title, sch: s.schedule, skip: s.skip, p: s.points, code: s.code });
     att.ADMIN.saveSettings(s, args[0]);
     await writeAtt(env, key, s);
-    const after = JSON.stringify({ t: s.title, sch: s.schedule, skip: s.skip, p: s.points });
+    const after = JSON.stringify({ t: s.title, sch: s.schedule, skip: s.skip, p: s.points, code: s.code });
     if (after !== before) logs.push(['save settings', after]);
   } else if (Object.prototype.hasOwnProperty.call(att.ADMIN, action)) {
     const before = s.roster.slice();
@@ -465,7 +486,8 @@ async function attAdminDo(env, real, who, action, key, args) {
     await writeAtt(env, key, s);
     const added = s.roster.filter(r => before.indexOf(r) === -1).map(r => name(r.email)).join(', ');
     const detail = { addExtra: 'window ' + args[0] + ' ' + args[1] + ' to ' + args[2], removeExtra: 'window ' + args[0] + ' ' + (args[1] || ''),
-                     addStudent: added, removeStudent: removed, setCorrect: args[0] + ': ' + (args[1] || 'none') };
+                     addStudent: added, removeStudent: removed, setCorrect: args[0] + ': ' + (args[1] || 'none'),
+                     excludeDate: args[0] + ' (does not count)', includeDate: args[0] + ' (counts again)' };
     logs.push([action.replace(/([A-Z])/g, c => ' ' + c.toLowerCase()), action in detail ? detail[action] : args.join(', ')]);
   } else if (action !== 'get') throw new Error('Unknown action.');
 
@@ -479,7 +501,9 @@ async function attAdminDo(env, real, who, action, key, args) {
   const answers = s.questions.length
     ? (await env.DB.prepare('SELECT qid, email, answer, time FROM att_answers WHERE class = ?').bind(key).all()).results : [];
   const roundsList = att.rounds(s, ids, now);
-  return { state: s, marks: marks, answers: answers, rounds: roundsList, today: att.nyParts(now).date,
-           open: att.windowAt(s, now), next: att.nextWindow(s, now), now: new Date(now).toISOString(),
+  const open = att.windowAt(s, now);
+  const state = Object.assign({}, s); delete state.secret;  // the page never needs the secret
+  return { state: state, marks: marks, answers: answers, rounds: roundsList, today: att.nyParts(now).date,
+           open: open, code: open ? att.sessionCode(s, open.id) : null, next: att.nextWindow(s, now), now: new Date(now).toISOString(),
            question: att.openQuestion(s, now), report: att.report(s, roundsList, marks, now) };
 }

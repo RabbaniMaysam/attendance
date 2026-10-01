@@ -22,6 +22,10 @@
     .big { display: block; width: 100%; padding: 26px 16px; font-size: 24px; font-weight: 700; border: 0; border-radius: 12px;
            color: #fff; cursor: pointer; background: linear-gradient(135deg, #1a7f37, #3aa85a); box-shadow: 0 2px 8px rgba(0, 0, 0, .2); }
     .big:disabled { opacity: .6; cursor: default; }
+    .codelabel { text-align: center; margin: 0 0 6px; color: var(--muted); }
+    .code { display: block; width: 180px; margin: 0 auto 14px; padding: 10px; font-size: 32px; letter-spacing: 10px; text-align: center;
+            border: 2px solid var(--line); border-radius: 10px; font-family: inherit; }
+    .code:focus { border-color: var(--accent); outline: none; }
     .done { padding: 26px 16px; border-radius: 12px; background: #e8f5ec; color: var(--ok); border: 1px solid #b9dfc4;
             font-size: 22px; font-weight: 700; text-align: center; }
     .standby { padding: 22px 16px; border-radius: 12px; background: #f0f2f5; color: var(--muted); text-align: center; font-size: 18px; }
@@ -100,9 +104,11 @@
   }
   document.addEventListener('visibilitychange', function () { if (!document.hidden) load(); });
 
+  var codeDraft = '';  // the session code being typed; survives the page's refreshes
   function mark() {
+    if (S.needCode && !/^\d{4}$/.test(codeDraft.trim())) { flash = 'Type the 4-digit session code shown by your instructor.'; render(); return; }
     busy = true; render();
-    api('mark').then(function (s) { busy = false; S = s; flash = ''; render(); schedule(); })
+    api('mark', [codeDraft.trim()]).then(function (s) { busy = false; S = s; flash = ''; codeDraft = ''; render(); schedule(); })
       .catch(function (e) { busy = false; if (e.message !== 'SIGNIN') { flash = e.message; load(); } });
   }
 
@@ -205,6 +211,17 @@
     var earlier = S.today.filter(function (t) { return t !== S.marked; });
     if (S.open && !S.marked) {
       var card = el('div', { class: 'card' });
+      if (S.needCode) {
+        // The refresh redraws the page; the typed digits are kept and the field keeps the focus.
+        var hadFocus = document.activeElement && document.activeElement.id === 'code';
+        var code = el('input', { id: 'code', class: 'code', type: 'text', inputmode: 'numeric', pattern: '[0-9]*', maxlength: 4, autocomplete: 'off', placeholder: '0000' });
+        code.value = codeDraft;
+        code.addEventListener('input', function () { codeDraft = code.value.replace(/\D/g, '').slice(0, 4); code.value = codeDraft; });
+        code.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') mark(); });
+        card.appendChild(el('p', { class: 'codelabel', text: 'Session code (shown with the QR code):' }));
+        card.appendChild(code);
+        if (hadFocus) setTimeout(function () { code.focus(); code.setSelectionRange(code.value.length, code.value.length); }, 0);
+      }
       card.appendChild(el('button', { class: 'big', disabled: busy, text: busy ? 'Recording...' : 'I am here', on: { click: mark } }));
       card.appendChild(el('p', { class: 'muted qnote', text: 'Attendance closes at ' + clock(S.open.close) + '.' }));
       app.appendChild(card);

@@ -29,10 +29,21 @@
     table { border-collapse: collapse; width: 100%; }
     th, td { text-align: left; vertical-align: top; padding: 6px 8px; border-top: 1px solid var(--line); white-space: nowrap; }
     th { border-top: 0; font-size: 13px; color: var(--muted); font-weight: 600; }
-    th.date { writing-mode: vertical-rl; transform: rotate(180deg); text-align: left; padding: 6px 1px; font-weight: 500; font-size: 12px; }
-    th.date.open { color: var(--ok); font-weight: 700; }
-    td.mark { text-align: center; padding: 3px 1px; }
-    td.mark button { width: 22px; height: 22px; padding: 0; border-radius: 4px; border: 1px solid var(--line); background: #fff; color: transparent; font-size: 12px; }
+    /* the attendance grid: as narrow as its content, vertical headers centered over the cells */
+    table.grid { width: auto; }
+    table.grid td.name { padding: 2px 10px 2px 4px; line-height: 1.25; }
+    table.grid td.name .muted { font-size: 12px; }
+    table.grid th.v { text-align: center; vertical-align: bottom; padding: 4px 0 3px; font-weight: 500; font-size: 12px; }
+    table.grid th.v span { display: inline-block; writing-mode: vertical-rl; transform: rotate(180deg); line-height: 1.1; }
+    table.grid th.v.open { color: var(--ok); font-weight: 700; }
+    table.grid th.v.click { cursor: pointer; }
+    table.grid th.v.click:hover { color: var(--accent); }
+    table.grid th.v.out, table.grid td.out { color: #b0b6bd; }
+    table.grid th.v.out span { text-decoration: line-through; }
+    table.grid td.out button { opacity: .45; }
+    table.grid td.total { text-align: center; padding: 2px 4px; }
+    td.mark { text-align: center; padding: 1px; }
+    td.mark button { width: 20px; height: 20px; padding: 0; border-radius: 4px; border: 1px solid var(--line); background: #fff; color: transparent; font-size: 11px; display: block; }
     td.mark button.on { background: #dff3e4; border-color: var(--ok); color: var(--ok); font-weight: 700; }
     td.mark button.inst { background: #fff0b3; border-color: #b58900; color: #6b4e00; font-weight: 700; }
     td.mark button.rev { background: #fde2e2; border-color: #c0392b; color: #c0392b; font-weight: 700; }
@@ -76,6 +87,8 @@
     .qr svg { width: 100%; height: 100%; display: block; }
     .qrurl { font-size: 26px; margin: 14px 0 4px; word-break: break-all; }
     .qrstatus { font-size: 22px; margin: 0 0 6px; color: var(--ok); }
+    .qrcode { font-size: 44px; font-weight: 700; margin: 6px 0; letter-spacing: 4px; }
+    .qrcode small { font-size: 22px; font-weight: 500; letter-spacing: 0; color: var(--muted); margin-right: 12px; }
   </style>
 </head>
 <body>
@@ -177,7 +190,7 @@
   function statusText() {
     var q = D.state.questions.filter(isOpenQ)[0];
     return (D.open
-      ? 'Attendance is OPEN (round of ' + clock(D.open.open) + '), ' + mmss(remaining()) + ' left (until ' + clock(D.open.close) + ') · ' + D.marks.filter(function (m) { return m.round === D.open.id && m.present; }).length + ' of ' + D.state.roster.length + ' marked'
+      ? 'Attendance is OPEN (round of ' + clock(D.open.open) + '), ' + mmss(remaining()) + ' left (until ' + clock(D.open.close) + ')' + (D.state.code ? ' · session code ' + D.code : '') + ' · ' + D.marks.filter(function (m) { return m.round === D.open.id && m.present; }).length + ' of ' + D.state.roster.length + ' marked'
       : 'Attendance is closed' + (D.next ? ' · next: ' + shortDate(D.next.date) + ', ' + clock(D.next.open) + ' to ' + clock(D.next.close) : ' · no upcoming class is scheduled'))
       + (q ? ' · question open: ' + answersOf(q.id).length + ' of ' + D.state.roster.length + ' answered' : '');
   }
@@ -300,7 +313,7 @@
   function settingsOf(S) {
     return { title: S.title, days: S.schedule.days.slice(), open: S.schedule.open, close: S.schedule.close,
              start: S.schedule.start || '', end: S.schedule.end || '', skip: S.skip.join('\n'),
-             pointsMode: S.points.mode, points: String(S.points.value) };
+             pointsMode: S.points.mode, points: String(S.points.value), code: !!S.code };
   }
   /** Resolves true when it is fine to leave the Settings form (nothing to save, saved, or discarded), false to stay. */
   function leaveSettings() {
@@ -362,34 +375,75 @@
     return pic;
   }
 
+  /** The session code line: "Session code 1224" while a round is open (and codes are required), else a short note. */
+  function codeLine(cls) {
+    var e = el('p', { class: cls });
+    var tick = function () {
+      e.innerHTML = '';
+      if (!D || !D.state.code) return;
+      if (D.open) { e.appendChild(el('small', { text: 'Session code' })); e.appendChild(document.createTextNode(D.code)); }
+      else e.appendChild(el('small', { text: 'The session code appears here when attendance opens.' }));
+    };
+    tick(); e.tick = tick;
+    return e;
+  }
+
   /** Full-screen QR code of the student link, for the classroom projector, with the live status (attendance and question). */
   function showQr() {
     withQr(function () {
-      var status = el('p', { class: 'qrstatus' });
-      var tick = function () { if (D) status.textContent = statusText(); };
+      var status = el('p', { class: 'qrstatus' }), code = codeLine('qrcode');
+      var tick = function () { if (D) { status.textContent = statusText(); code.tick(); } };
       tick();
       var iv = setInterval(tick, 1000);
       var veil, onKey = function (ev) { if (ev.key === 'Escape') done(); };
       var done = function () { clearInterval(iv); veil.remove(); document.removeEventListener('keydown', onKey); };
       veil = el('div', { class: 'veil qrveil', on: { click: done } },
-        el('h1', { text: D ? D.state.title : cur }), qrPicture(), el('p', { class: 'qrurl', text: studentLink() }), status,
+        el('h1', { text: D ? D.state.title : cur }), qrPicture(), el('p', { class: 'qrurl', text: studentLink() }), code, status,
         el('p', { class: 'muted', text: 'Click anywhere or press Esc to close.' }));
       document.body.appendChild(veil);
       document.addEventListener('keydown', onKey);
     });
   }
 
+  // ---- Full download and the 60-day reminder
+  var BACKUP_DAYS = 60;
+  function backupDue() { return !D.state.backupAt || Date.now() - Date.parse(D.state.backupAt) > BACKUP_DAYS * 86400000; }
+  /** Downloads everything stored about the class (settings, roster, marks, answers, log) as one JSON file, then notes the download. */
+  function exportAll() {
+    busy = true; flash = null; render();
+    call('export').then(function (d) {
+      var a = el('a', { href: URL.createObjectURL(new Blob([JSON.stringify(d, null, 1)], { type: 'application/json' })), download: 'attendance_' + cur + '_' + D.today + '_full.json' });
+      document.body.appendChild(a); a.click(); a.remove();
+      return call('noteBackup', ['downloaded ' + d.marks.length + ' marks, ' + d.answers.length + ' answers, ' + d.log.length + ' log rows']);
+    }).then(function (d) { busy = false; D = d; flash = { ok: 'Downloaded. Keep the file somewhere safe.' }; render(); }).catch(fail);
+  }
+  function backupBanner() {
+    var last = D.state.backupAt ? 'last on ' + isoClock(D.state.backupAt) : 'never';
+    var cb = el('input', { type: 'checkbox', disabled: busy });
+    cb.addEventListener('change', function () {
+      if (!cb.checked) return;
+      ask('Mark the data as saved?', ['The reminder goes away for ' + BACKUP_DAYS + ' days.'], 'Yes, I saved it', false)
+        .then(function (yes) { if (yes) run('noteBackup', ['saved elsewhere'], 'Noted.'); else render(); });
+    });
+    return el('div', { class: 'banner note savebar' },
+      el('b', { text: 'No full download of this class in the last ' + BACKUP_DAYS + ' days (' + last + ').' }),
+      button('Download everything', '', exportAll),
+      el('label', {}, cb, 'I saved it elsewhere'),
+      el('span', { class: 'muted', text: 'One JSON file with the settings, roster, every mark, every answer, and the whole log.' }));
+  }
+
   // ---- QR code tab: the code on the page, with the live status and a full-screen button
   function qrTab(card) {
     card.appendChild(liveStatus('banner ' + (D.open ? 'ok' : 'note')));
     card.appendChild(el('div', { class: 'row', style: 'margin-top:12px' }, button('Full screen', '', showQr),
-      el('span', { class: 'muted', text: 'The full-screen view shows the code, the link, and the live status for the classroom projector; it works during attendance and questions alike.' })));
+      el('span', { class: 'muted', text: 'The full-screen view shows the code, the link, the session code, and the live status for the classroom projector; it works during attendance and questions alike.' })));
     var holder = el('div', { style: 'text-align:center; margin-top:8px' });
     card.appendChild(holder);
     withQr(function () {
       var pic = qrPicture(); pic.style.cssText = 'width:min(50vh, 90%); height:auto; margin:0 auto';
       holder.appendChild(pic);
       holder.appendChild(el('p', { class: 'qrurl', style: 'font-size:18px', text: studentLink() }));
+      holder.appendChild(codeLine('qrcode'));
     });
   }
 
@@ -434,6 +488,7 @@
     if (flash) app.appendChild(el('div', { class: 'banner ' + (flash.err ? 'err' : 'ok'), text: flash.err || flash.ok }));
     if (!cur) { app.appendChild(el('p', { class: 'muted', style: 'margin-top:12px', text: 'No attendance class exists yet. Create one above.' })); return; }
     if (!D) { app.appendChild(el('p', { class: 'muted', text: 'Loading...' })); return; }
+    if (backupDue()) app.appendChild(backupBanner());
 
     var tabs = el('div', { class: 'tabs' });
     TABS.forEach(function (t) {
@@ -451,21 +506,38 @@
 
   // ---- Attendance grid
   var gridView = '';  // 'today' (this day's rounds, the live view) or 'all'; chosen on first draw
+  var showExcluded = false;
+  function counted(x) { return D.state.exclude.indexOf(x.date) === -1; }
+  /** Excludes or includes a date after a confirmation. */
+  function toggleDate(date) {
+    var out = D.state.exclude.indexOf(date) !== -1, label = shortDate(date) + ' (' + date + ')';
+    leaveMarks().then(function (go) {
+      if (!go) return;
+      return (out
+        ? ask('Count ' + label + ' again?', ['Its rounds count again in the percentages and points, and the column is shown.'], 'Include', false)
+        : ask('Exclude ' + label + '?', ['Its rounds no longer count in the percentages and points, and the column is hidden (the "Show excluded" switch shows it). The marks are kept, and the date can be included again at any time.'], 'Exclude', false))
+        .then(function (yes) { if (yes) run(out ? 'includeDate' : 'excludeDate', [date], out ? label + ' counts again.' : label + ' is excluded.'); });
+    });
+  }
   function attendance(card) {
     var S = D.state, R = D.report, locked = !!D.open;
     card.appendChild(liveStatus('banner ' + (D.open ? 'ok' : 'note')));
     var minutes = el('input', { type: 'number', min: 1, max: 600, value: 10, style: 'width:70px' });
+    var more = el('input', { type: 'number', min: 1, max: 600, value: 5, style: 'width:60px' });
     var byKey = {};
     D.marks.forEach(function (m) { byKey[m.round + '|' + m.email] = m; });
     function has(id, email) { var m = byKey[id + '|' + email]; return !!(m && m.present); }
+    var cnt = D.rounds.filter(counted), nOut = D.rounds.length - cnt.length;
     var todays = D.rounds.filter(function (x) { return x.date === D.today; });
     if (!gridView) gridView = todays.length ? 'today' : 'all';
-    var rounds = gridView === 'today' ? todays : D.rounds;
+    var rounds = (gridView === 'today' ? todays : D.rounds).filter(function (x) { return showExcluded || counted(x); });
     card.appendChild(el('div', { class: 'row', style: 'margin-top:12px' },
       D.open ? button('Close attendance now', '', function () {
         ask('Close attendance now?', ['Students can no longer mark themselves present today. The marks made so far are kept. "Open attendance now" reopens it.'], 'Close now', false)
           .then(function (yes) { if (yes) run('closeNow', [], 'Attendance is closed.'); });
       }) : null,
+      D.open ? button('Extend by', 'plain', function () { run('extendNow', [Number(more.value)], 'Extended.'); }) : null,
+      D.open ? el('label', {}, more, ' min') : null,
       D.open ? el('span', { class: 'muted', text: '·' }) : null,
       button('Open attendance now', D.open ? 'plain' : '', function () {
         leaveMarks().then(function (go) {
@@ -477,29 +549,33 @@
       el('span', { class: 'muted', text: '·' }),
       button('Download CSV', 'plain', function () {
         // Two columns per round: present (1/0) and the manual change (+1, -1, or 0); then the totals and the points.
+        // Excluded rounds are listed (marked) but left out of the totals.
         var head = ['Last name', 'First name', 'Email'];
-        D.rounds.forEach(function (x) { head.push(csvLabel(x), csvLabel(x) + ' change'); });
+        D.rounds.forEach(function (x) { var l = csvLabel(x) + (counted(x) ? '' : ' (excluded)'); head.push(l, l + ' change'); });
         head.push('Present', 'Rounds', 'Percent', 'Changes', 'Points', 'Possible so far', 'Total points');
         var rows = [head].concat(S.roster.map(function (r) {
           var row = [r.last, r.first, r.email], n = 0, edits = 0, st = R.students[r.email];
           D.rounds.forEach(function (x) {
             var m = byKey[x.id + '|' + r.email], c = changeOf(m);
-            if (m && m.present) n++;
+            if (m && m.present && counted(x)) n++;
             if (c) edits++;
             row.push(m && m.present ? 1 : 0, c);
           });
-          return row.concat([n, D.rounds.length, D.rounds.length ? num(100 * n / D.rounds.length, 1) : '', edits, num(st.points, 3), num(st.possible, 3), num(R.total, 3)]);
+          return row.concat([n, cnt.length, cnt.length ? num(100 * n / cnt.length, 1) : '', edits, num(st.points, 3), num(st.possible, 3), num(R.total, 3)]);
         }));
         download('attendance_' + cur + '_' + D.today + '.csv', rows);
       })));
     if (!S.roster.length) { card.appendChild(el('p', { class: 'muted', text: 'The roster is empty. Import it on the Roster tab.' })); return; }
 
     // view switch and the save bar
+    var exCb = el('input', { type: 'checkbox' }); exCb.checked = showExcluded;
+    exCb.addEventListener('change', function () { showExcluded = exCb.checked; render(); });
     var switcher = el('div', { class: 'row', style: 'margin-top:4px' },
       el('button', { class: 'view' + (gridView === 'today' ? ' on' : ''), text: 'Today (' + todays.length + (todays.length === 1 ? ' round)' : ' rounds)'), on: { click: function () { gridView = 'today'; render(); } } }),
-      el('button', { class: 'view' + (gridView === 'all' ? ' on' : ''), text: 'All rounds (' + D.rounds.length + ')', on: { click: function () { gridView = 'all'; render(); } } }),
+      el('button', { class: 'view' + (gridView === 'all' ? ' on' : ''), text: 'All rounds (' + cnt.length + ')', on: { click: function () { gridView = 'all'; render(); } } }),
+      nOut ? el('label', {}, exCb, 'Show excluded (' + nOut + ')') : null,
       el('span', { class: 'muted', text: locked ? 'Attendance is open: the grid is live and read-only. Cells can be changed after it closes.'
-        : 'Click cells to change them, then save. Nothing changes until you save.' }));
+        : 'Click cells to change them, then save. Nothing changes until you save. Click a date to exclude it (or include it again).' }));
     card.appendChild(switcher);
     if (marksDirty()) {
       var k = pendingList().length;
@@ -513,23 +589,30 @@
       return;
     }
 
-    // the grid: one column per round; a label shows the time only on days with several rounds
+    // the grid: one column per round; a label shows the time only on days with several rounds; every header is vertical
     var perDate = {};
     D.rounds.forEach(function (x) { perDate[x.date] = (perDate[x.date] || 0) + 1; });
     var showPoints = S.points.value > 0;
-    var head = el('tr', {}, el('th', { text: 'Student' }));
+    var vth = function (text, cls, title) { return el('th', { class: 'v' + (cls ? ' ' + cls : ''), title: title || null }, el('span', { text: text })); };
+    var head = el('tr', {}, el('th', { text: 'Student', style: 'vertical-align:bottom' }));
     rounds.forEach(function (x) {
-      head.appendChild(el('th', { class: 'date' + (D.open && x.id === D.open.id ? ' open' : ''), title: csvLabel(x),
-        text: monthDay(x.date) + (perDate[x.date] > 1 ? ' ' + clock(x.open) : '') }));
+      var out = !counted(x);
+      var h = vth(monthDay(x.date) + (perDate[x.date] > 1 ? ' ' + clock(x.open) : ''), 'click' + (out ? ' out' : '') + (D.open && x.id === D.open.id ? ' open' : ''),
+        csvLabel(x) + (out ? ' (excluded). Click to include it again.' : '. Click to exclude this date.'));
+      h.addEventListener('click', function () { toggleDate(x.date); });
+      head.appendChild(h);
     });
-    ['Present', '%'].concat(showPoints ? ['Points'] : [], ['Changed']).forEach(function (h) { head.appendChild(el('th', { text: h })); });
-    var t = el('table', {}, head);
+    head.appendChild(vth('Present', '', 'rounds present, of the ' + cnt.length + ' that count'));
+    head.appendChild(vth('%'));
+    if (showPoints) head.appendChild(vth('Points', '', 'attendance points earned so far'));
+    head.appendChild(vth('Changed', '', 'cells changed by hand: up, down'));
+    var t = el('table', { class: 'grid' }, head);
     S.roster.forEach(function (r) {
-      var tr = el('tr', {}, el('td', {}, fullName(r), el('div', { class: 'muted', text: r.email })));
+      var tr = el('tr', {}, el('td', { class: 'name' }, fullName(r), el('div', { class: 'muted', text: r.email })));
       var n = 0, up = 0, down = 0, st = R.students[r.email];
       D.rounds.forEach(function (x) {
         var m = byKey[x.id + '|' + r.email], c = changeOf(m);
-        if (m && m.present) n++;
+        if (m && m.present && counted(x)) n++;
         if (c > 0) up++; else if (c < 0) down++;
       });
       rounds.forEach(function (x) {
@@ -539,23 +622,23 @@
           text: shown ? '✓' : '✗', disabled: busy || locked,
           title: locked ? 'Attendance is open. Cells can be changed after it closes.' : (k in pending ? 'Unsaved change. Click to undo.' : cellTitle(m, c)),
           on: { click: function () { if (k in pending) delete pending[k]; else pending[k] = !on; render(); } } });
-        tr.appendChild(el('td', { class: 'mark' }, b));
+        tr.appendChild(el('td', { class: 'mark' + (counted(x) ? '' : ' out') }, b));
       });
-      tr.appendChild(el('td', { class: 'total', text: n + ' / ' + D.rounds.length }));
-      tr.appendChild(el('td', { class: 'total', text: D.rounds.length ? num(100 * n / D.rounds.length, 0) + '%' : '' }));
+      tr.appendChild(el('td', { class: 'total', text: n + '/' + cnt.length }));
+      tr.appendChild(el('td', { class: 'total', text: cnt.length ? num(100 * n / cnt.length, 0) + '%' : '' }));
       if (showPoints) tr.appendChild(el('td', { class: 'total', title: 'of ' + num(st.possible, 2) + ' possible so far, ' + num(R.total, 2) + ' in the semester', text: num(st.points, 2) }));
       tr.appendChild(el('td', { class: 'total', text: (up ? '+' + up : '') + (up && down ? ' ' : '') + (down ? '−' + down : '') }));
       t.appendChild(tr);
     });
-    var tot = el('tr', {}, el('td', { text: 'Present' }));
-    rounds.forEach(function (x) { tot.appendChild(el('td', { class: 'mark', text: String(S.roster.filter(function (r) { return has(x.id, r.email); }).length) })); });
+    var tot = el('tr', {}, el('td', { class: 'name', text: 'Present' }));
+    rounds.forEach(function (x) { tot.appendChild(el('td', { class: 'mark' + (counted(x) ? '' : ' out'), text: String(S.roster.filter(function (r) { return has(x.id, r.email); }).length) })); });
     for (var i = 0; i < 3 + (showPoints ? 1 : 0); i++) tot.appendChild(el('td'));
     t.appendChild(tot);
     card.appendChild(el('div', { class: 'scroll' }, t));
     card.appendChild(el('p', { class: 'muted', style: 'margin-top:10px' },
       el('span', { class: 'swatch on' }), ' marked by the student during the round; ', el('span', { class: 'swatch inst' }),
       ' marked present by you (change +1); ', el('span', { class: 'swatch rev' }),
-      ' marked by the student, set absent by you (change −1). A dashed outline is an unsaved change. A cell set back to what the student did has change 0; "Changed" counts the rounds changed by hand, up and down. "Present" and "%" count all rounds that have opened; "Points" are the attendance points earned so far (Settings sets them; the Reports tab has the details). One column per round (each scheduled or "open now" window that has opened, from the first class day through now, plus any round with a mark); several rounds on one day are several columns, labelled with their time. The grid refreshes every 10 seconds.'));
+      ' marked by the student, set absent by you (change −1). A dashed outline is an unsaved change. A cell set back to what the student did has change 0; "Changed" counts the rounds changed by hand, up and down. "Present" and "%" count the rounds that have opened on dates that count; an excluded date (struck through, greyed) keeps its marks but counts nowhere. "Points" are the attendance points earned so far (Settings sets them; the Reports tab has the details). One column per round (each scheduled or "open now" window that has opened, from the first class day through now, plus any round with a mark); several rounds on one day are several columns, labelled with their time. The grid refreshes every 10 seconds.'));
     changesList(card, S);
   }
   function roundLabel(x) { return shortDate(x.date) + ' ' + clock(x.open); }
@@ -600,18 +683,28 @@
     var opened = R.sessions.filter(function (x) { return x.opened; }).length;
     card.appendChild(el('h2', { text: 'Sessions' }));
     card.appendChild(el('p', { class: 'muted', text: R.dates.length + ' sessions from ' + (R.dates[0] ? shortDate(R.dates[0]) : '?') + ' to ' + (R.dates.length ? shortDate(R.dates[R.dates.length - 1]) : '?')
-      + ' (the scheduled class days minus the no-class days, plus one-off windows and any day with marks); ' + opened + ' have had attendance. ' + pointsText(S, R)
-      + ' A session with several rounds splits its points equally among them.' }));
-    var t = el('table', {}, el('tr', {}, el('th', { text: 'Date' }), el('th', { text: 'Rounds' }), el('th', { text: 'Present' }), el('th', { text: '% of ' + n }), el('th', { text: 'Points' })));
+      + ' (the scheduled class days minus the no-class days, plus one-off windows and any day with marks, minus the excluded dates); ' + opened + ' have had attendance. ' + pointsText(S, R)
+      + ' A session with several rounds splits its points equally among them. "Exclude" takes a date out of the sessions, the percentages, and the points (its marks are kept); "Include" puts it back.' }));
+    var t = el('table', {}, el('tr', {}, el('th', { text: 'Date' }), el('th', { text: 'Rounds' }), el('th', { text: 'Present' }), el('th', { text: '% of ' + n }), el('th', { text: 'Points' }), el('th', {})));
     R.sessions.forEach(function (x) {
       var k = x.rounds.map(function (r) { return r.present; });
       t.appendChild(el('tr', {}, el('td', { text: shortDate(x.date) + ' (' + x.date + ')' }),
         el('td', { class: x.opened ? '' : 'muted', text: x.opened ? x.rounds.map(function (r) { return clock(r.open); }).join(', ') : (x.date <= D.today ? 'no attendance taken' : 'upcoming') }),
         el('td', { text: k.join(', ') }),
         el('td', { text: n ? k.map(function (v) { return num(100 * v / n, 0) + '%'; }).join(', ') : '' }),
-        el('td', { text: num(x.points, 3) })));
+        el('td', { text: num(x.points, 3) }),
+        el('td', {}, el('button', { class: 'link', text: 'Exclude', on: { click: function () { toggleDate(x.date); } } }))));
     });
     card.appendChild(el('div', { class: 'scroll' }, t));
+    if (S.exclude.length) {
+      var ex = el('p', { style: 'margin-top:10px' }, el('b', { text: 'Excluded dates (' + S.exclude.length + '): ' }));
+      S.exclude.forEach(function (d, i) {
+        var k = D.rounds.filter(function (x) { return x.date === d; }).length;
+        ex.appendChild(el('span', {}, (i ? ' · ' : '') + shortDate(d) + ' (' + (k ? k + (k === 1 ? ' round' : ' rounds') : 'no round') + ') ',
+          el('button', { class: 'link', text: 'Include', on: { click: function () { toggleDate(d); } } })));
+      });
+      card.appendChild(ex);
+    }
 
     card.appendChild(el('h2', { text: 'Students', style: 'margin-top:18px' }));
     var rows = S.roster.map(function (r) {
@@ -629,6 +722,11 @@
         el('td', { class: 'total', text: num(x.points, 2) }), el('td', { class: 'total', text: num(x.possible, 2) }), el('td', { class: 'total', text: num(R.total, 2) })));
     });
     card.appendChild(el('div', { class: 'scroll' }, u));
+
+    card.appendChild(el('h2', { text: 'Full download', style: 'margin-top:18px' }));
+    card.appendChild(el('div', { class: 'row' }, button('Download everything', 'plain', exportAll),
+      el('span', { class: 'muted', text: 'One JSON file with the settings, roster, every mark, every answer, and the whole log, for your own records. '
+        + (S.backupAt ? 'Last noted download: ' + isoClock(S.backupAt) + '.' : 'Never downloaded.') + ' A reminder appears at the top of the page after ' + BACKUP_DAYS + ' days without one.' })));
   }
 
   // ---- Log: every student mark and answer, every instructor action, and every refused attempt
@@ -673,15 +771,16 @@
     var pmode = el('select', {}, el('option', { value: 'total', text: 'total for the semester, divided among all sessions' }), el('option', { value: 'per', text: 'per session' }));
     pmode.value = v.pointsMode;
     var pval = el('input', { type: 'number', min: 0, max: 1000, step: 'any', value: v.points, style: 'width:90px' });
+    var codeCb = el('input', { type: 'checkbox' }); codeCb.checked = v.code;
     var form = function () {
       return { title: title.value, days: days.filter(function (d) { return d.cb.checked; }).map(function (d) { return d.i; }),
                open: open.value, close: close.value, start: start.value, end: end.value, skip: skip.value,
-               pointsMode: pmode.value, points: pval.value };
+               pointsMode: pmode.value, points: pval.value, code: codeCb.checked };
     };
     // Every edit updates the draft, so the form survives redraws and the tab-change check sees it.
     var note = el('span', { class: 'muted', text: settingsDirty() ? 'Unsaved changes.' : '' });
     var edited = function () { settingsDraft = form(); note.textContent = settingsDirty() ? 'Unsaved changes.' : ''; };
-    [title, open, close, start, end, skip, pmode, pval].concat(days.map(function (d) { return d.cb; })).forEach(function (inp) {
+    [title, open, close, start, end, skip, pmode, pval, codeCb].concat(days.map(function (d) { return d.cb; })).forEach(function (inp) {
       inp.addEventListener('input', edited);
       inp.addEventListener('change', edited);
     });
@@ -694,7 +793,9 @@
       el('dt', { text: 'Closes at' }), el('dd', {}, close),
       el('dt', { text: 'First class day' }), el('dd', {}, start, ' ', el('span', { class: 'muted', text: 'optional; the grid starts here' })),
       el('dt', { text: 'Last class day' }), el('dd', {}, end, ' ', el('span', { class: 'muted', text: 'optional; no windows after it' })),
-      el('dt', { text: 'No class on' }), el('dd', {}, skip, el('div', { class: 'muted', text: 'One date per line, YYYY-MM-DD (holidays, cancelled classes).' }))));
+      el('dt', { text: 'No class on' }), el('dd', {}, skip, el('div', { class: 'muted', text: 'One date per line, YYYY-MM-DD (holidays, cancelled classes). No window opens on these days and they are not sessions. A day that did have a window but should not count is excluded instead (click its date in the grid, or use the Reports tab).' })),
+      el('dt', { text: 'Session code' }), el('dd', {}, el('label', {}, codeCb, 'students must type the 4-digit code of the round'),
+        el('div', { class: 'muted', text: 'The code is shown with the QR code (and in the status line) while a round is open; it is fixed for the round and changes with every round.' }))));
     card.appendChild(el('h2', { text: 'Attendance points', style: 'margin-top:18px' }));
     card.appendChild(el('dl', {},
       el('dt', { text: 'Points' }), el('dd', {}, pval, ' ', pmode),
@@ -712,9 +813,10 @@
     if (S.extra.length) {
       var t = el('table', {}, el('tr', {}, el('th', { text: 'Date' }), el('th', { text: 'Opens' }), el('th', { text: 'Closes' }), el('th', {})));
       S.extra.forEach(function (x) {
-        var early = S.closed[x.date + ' ' + x.open];
+        var early = S.closed[x.date + ' ' + x.open], late = S.extended[x.date + ' ' + x.open];
+        var close = late && late > x.close ? late : x.close;
         t.appendChild(el('tr', {}, el('td', { text: shortDate(x.date) + ' (' + x.date + ')' }), el('td', { text: clock(x.open) }),
-          el('td', { text: early && early < x.close ? clock(early) + ' (closed early)' : clock(x.close) }),
+          el('td', { text: early && early < close ? clock(early) + ' (closed early)' : clock(close) + (close !== x.close ? ' (extended)' : '') }),
           el('td', {}, button('Remove', 'danger', function () { run('removeExtra', [x.date, x.open], 'Window removed.'); }))));
       });
       card.appendChild(t);

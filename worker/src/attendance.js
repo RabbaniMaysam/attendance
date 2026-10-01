@@ -10,10 +10,16 @@
  *   skip       ['YYYY-MM-DD', ...]   scheduled days with no class (holidays)
  *   extra      [{date, open, close}] one-off windows (a moved class, or "open now"); several per date allowed
  *   closed     {round id: 'HH:MM'}  windows closed early ("close now", or superseded by "open now")
+ *   extended   {round id: 'HH:MM'}  windows extended while open ("extend"): the new closing time
+ *   exclude    ['YYYY-MM-DD', ...]  dates that do not count: hidden in the grid, left out of the sessions,
+ *              the percentages, and the points (their marks are kept; a date can be included again)
  *   questions  [{id, kind: 'tf' | 'yn' | 'mc', n, text, correct, opened, closes}]  in-class questions, oldest first;
  *              times are ISO instants; a question is open while now < closes. Answers are rows of att_answers.
  *   points     {mode: 'per' | 'total', value}  attendance points: per session, or a total divided equally
  *              among all sessions of the semester (see sessionDates and report)
+ *   code       true when students must type the round's session code to mark themselves present
+ *   secret     random string; the session code of a round is derived from it (see sessionCode)
+ *   backupAt   ISO instant of the last full download of the class's data noted by the instructor, or ''
  * All clock times are New York local time. Every window is one attendance round, identified by
  * 'YYYY-MM-DD HH:MM' (its date and opening time); marks are rows of att_marks keyed by round and
  * email, so a day with three windows has three rounds and three columns in the grid.
@@ -47,12 +53,40 @@ export const DEFAULT_SKIP = ['2026-10-06', '2026-10-20', '2026-10-22', '2026-11-
 
 export function newAttClass(title, nowMs) {
   return { title: title, createdAt: nyParts(nowMs).date, roster: [],
-           schedule: Object.assign({}, DEFAULT_SCHEDULE), skip: DEFAULT_SKIP.slice(), extra: [], closed: {}, questions: [],
-           points: { mode: 'total', value: 0 } };
+           schedule: Object.assign({}, DEFAULT_SCHEDULE), skip: DEFAULT_SKIP.slice(), extra: [], closed: {}, extended: {}, exclude: [],
+           questions: [], points: { mode: 'total', value: 0 }, code: true, secret: randomSecret(), backupAt: '' };
 }
 
 const hhmm = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
 export const roundId = (date, open) => date + ' ' + open;
+
+export function randomSecret() {
+  let out = '';
+  for (let i = 0; i < 32; i++) out += Math.floor(Math.random() * 16).toString(16);
+  return out;
+}
+
+/**
+ * The 4-digit session code of a round, shown with the QR code and typed by students: a hash of the
+ * class's secret and the round id, so it is fixed for the round, differs between rounds, and cannot
+ * be guessed from earlier codes. (cyrb53 hash.)
+ */
+export function sessionCode(s, id) {
+  const str = String(s.secret || '') + '|' + id;
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  const n = 4294967296 * (2097151 & h2) + (h1 >>> 0);
+  return String(n % 10000).padStart(4, '0');
+}
+
+/** Whether a date counts (is not excluded). */
+export const counts = (s, date) => (s.exclude || []).indexOf(date) === -1;
 
 // ---------------------------------------------------------------- in-class questions
 
@@ -72,8 +106,9 @@ function questionView(q, answer, ms) {
 
 /**
  * The attendance windows (rounds) on one New York date, earliest first: {id, date, open, close, extra}.
- * A window closed early keeps its id and date but ends at the recorded minute (a zero-length window
- * when closed in its opening minute: listed for the grid, never open).
+ * An extended window ends at the recorded later minute. A window closed early keeps its id and date
+ * but ends at the recorded minute (a zero-length window when closed in its opening minute: listed
+ * for the grid, never open).
  */
 export function windowsOn(s, date, weekday) {
   const out = s.extra.filter(x => x.date === date).map(x => ({ open: x.open, close: x.close, extra: true }));
@@ -84,6 +119,8 @@ export function windowsOn(s, date, weekday) {
   }
   out.forEach(x => {
     x.id = roundId(date, x.open); x.date = date;
+    const late = (s.extended || {})[x.id];
+    if (late && toMin(late) > toMin(x.close)) x.close = late;
     const early = s.closed[x.id];
     if (early && toMin(early) < toMin(x.close)) x.close = hhmm(Math.max(toMin(x.open), toMin(early)));
   });
@@ -159,8 +196,8 @@ export function rounds(s, markRounds, ms) {
 /**
  * Every class session of the semester, past and future, as sorted dates: the scheduled days from the
  * first to the last class day (minus the no-class days), the dates of one-off windows, and the dates
- * of rounds that have marks. Without a last class day the schedule is walked through today or the
- * latest round, whichever is later. Points are divided among these dates.
+ * of rounds that have marks, minus the excluded dates. Without a last class day the schedule is walked
+ * through today or the latest round, whichever is later. Points are divided among these dates.
  */
 export function sessionDates(s, markRounds, ms) {
   const now = nyParts(ms);
@@ -177,18 +214,20 @@ export function sessionDates(s, markRounds, ms) {
       if (windowsOn(s, d, new Date(t0 + k * 86400000).getUTCDay()).some(w => !w.extra)) set[d] = true;
     }
   }
-  return Object.keys(set).sort();
+  return Object.keys(set).filter(d => counts(s, d)).sort();
 }
 
 /**
  * Attendance counts and points. roundsList: rounds() output; marks: [{round, email, present}].
  * Points per session: points.value in mode 'per', or points.value / number of sessions in mode 'total'.
  * A session's points are split equally among its rounds; a student earns a round's share when present.
+ * Rounds on excluded dates are left out of everything here.
  * Returns {dates, perSession, total, sessions: [{date, rounds: [{id, open, present}], points, opened}],
  *          students: {email: {present, rounds, points, possible}}} where rounds counts the rounds that
  * have opened, possible the points of the sessions that have opened, and total the semester's points.
  */
 export function report(s, roundsList, marks, ms) {
+  roundsList = roundsList.filter(x => counts(s, x.date));
   const dates = sessionDates(s, roundsList.map(x => x.id), ms);
   const n = dates.length;
   const pts = s.points || { mode: 'total', value: 0 };
@@ -237,12 +276,19 @@ export function studentView(s, email, marks, ms, answerOf) {
     authorized: true, email: email, name: fullName(me), title: s.title,
     date: nyParts(ms).date,
     open: open,                                   // {id, date, open, close, closesAt} or null
+    needCode: !!s.code,                           // the student must type the round's session code
     marked: mine ? mine.time : '',                // ISO time of the mark in the open round, or ''
     today: (marks || []).map(m => m.time).sort(), // ISO times of all of today's marks
     next: open ? null : nextWindow(s, ms),
     question: q ? questionView(q, answerOf ? answerOf(q.id) : null, ms) : null,
     refreshIn: refreshIn(s, ms)
   };
+}
+
+/** Checks the session code a student typed for the open round (when the class requires one). */
+export function checkCode(s, open, code) {
+  if (!s.code) return;
+  if (String(code ?? '').trim() !== sessionCode(s, open.id)) throw new Error('Wrong session code. Type the 4-digit code shown by your instructor.');
 }
 
 /** Checks a student's answer; returns the label to store. */
@@ -278,6 +324,35 @@ export const ADMIN = {
     s.schedule = { days: days.sort(), open: open, close: close, start: start, end: end };
     s.skip = skip.filter((d, i) => skip.indexOf(d) === i).sort();
     s.points = { mode: mode, value: value };
+    if (v.code !== undefined) s.code = !!v.code;
+  },
+
+  /** Excludes a date: hidden in the grid and left out of the sessions, percentages, and points. Marks are kept. */
+  excludeDate(s, date) {
+    date = text(date);
+    if (!isDate(date)) throw new Error('The date must be YYYY-MM-DD.');
+    if (counts(s, date)) s.exclude = s.exclude.concat([date]).sort();
+  },
+
+  /** Includes an excluded date again. */
+  includeDate(s, date) {
+    date = text(date);
+    if (counts(s, date)) throw new Error(date + ' is not excluded.');
+    s.exclude = s.exclude.filter(d => d !== date);
+  },
+
+  /** "Extend": the open round (scheduled or one-off) closes `minutes` later than it would, at most at 23:59. */
+  extendNow(s, minutes, nowMs) {
+    const n = Number(minutes);
+    if (!(n >= 1 && n <= 600)) throw new Error('Minutes must be 1 to 600.');
+    const open = windowAt(s, nowMs);
+    if (!open) throw new Error('Attendance is not open.');
+    s.extended[open.id] = hhmm(Math.min(toMin(open.close) + n, 1439));
+  },
+
+  /** Records that the instructor downloaded (or otherwise saved) the class's data in full. */
+  noteBackup(s, nowMs) {
+    s.backupAt = new Date(nowMs).toISOString();
   },
 
   /** A one-off window (a new round) on one date, for a moved class or "open now". Replaces an extra window with the same opening time. */
@@ -288,7 +363,7 @@ export const ADMIN = {
     open = hhmm(toMin(open)); close = hhmm(toMin(close));
     s.extra = s.extra.filter(x => !(x.date === date && x.open === open)).concat([{ date: date, open: open, close: close }])
       .sort((a, b) => (roundId(a.date, a.open) < roundId(b.date, b.open) ? -1 : 1));
-    delete s.closed[roundId(date, open)];
+    delete s.closed[roundId(date, open)]; delete s.extended[roundId(date, open)];
   },
 
   /** "Open now": closes the open round, if any, and starts a new one from this minute for `minutes` minutes. */
@@ -312,7 +387,7 @@ export const ADMIN = {
   removeExtra(s, date, open) {
     date = text(date); open = text(open);
     s.extra = s.extra.filter(x => !(x.date === date && (!open || x.open === open)));
-    delete s.closed[roundId(date, open)];
+    delete s.closed[roundId(date, open)]; delete s.extended[roundId(date, open)];
   },
 
   /** Replaces the roster (layouts: see parseRoster in rules.js). Marks of dropped students are kept in att_marks. */
@@ -409,6 +484,9 @@ function sortRoster(s) {
 /** Fills in fields added later. */
 export function upgradeAtt(s) {
   s.roster = s.roster || []; s.skip = s.skip || []; s.extra = s.extra || []; s.questions = s.questions || []; s.closed = s.closed || {};
+  s.extended = s.extended || {}; s.exclude = s.exclude || []; s.backupAt = s.backupAt || '';
+  if (s.code === undefined) s.code = true;
+  // The secret is created on the first read of an older class; the Worker writes the state back (see readAtt).
   s.schedule = Object.assign({}, DEFAULT_SCHEDULE, s.schedule || {});
   s.points = Object.assign({ mode: 'total', value: 0 }, s.points || {});
   delete s.sessions; delete s.cutoff;

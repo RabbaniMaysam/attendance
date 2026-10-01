@@ -362,6 +362,9 @@ async function attAdminCall(env, real, action, key, args) {
     const w = att.openNowWindow(now, args[0]);
     att.ADMIN.addExtra(s, w.date, w.open, w.close);
     await writeAtt(env, key, s);
+  } else if (action === 'closeNow') {
+    att.ADMIN.closeNow(s, now);
+    await writeAtt(env, key, s);
   } else if (action === 'askQuestion') {
     att.ADMIN.askQuestion(s, args[0], args[1], args[2], args[3], args[4], now);
     await writeAtt(env, key, s);

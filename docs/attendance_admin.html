@@ -79,7 +79,7 @@
   var TOKEN_KEY = 'signup_token';  // shared with the sign-up instructor page: one sign-in serves both
   var TZ = 'America/New_York';
   var DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  var TABS = ['Attendance', 'Questions', 'Settings', 'Roster'];
+  var TABS = ['Attendance', 'Questions', 'QR code', 'Settings', 'Roster'];
   var token = '', me = '', classes = [], cur = '', D = null, tab = 'Attendance';
   var flash = null, busy = false, timer = null;
   try { token = sessionStorage.getItem(TOKEN_KEY) || ''; cur = sessionStorage.getItem('att_admin_class') || ''; } catch (e) {}
@@ -158,7 +158,30 @@
   function poll() {
     clearTimeout(timer);
     var ms = tab === 'Questions' ? 4000 : 10000;
-    timer = setTimeout(function () { if ((tab === 'Attendance' || tab === 'Questions') && cur && !document.hidden) loadClass(true); poll(); }, ms);
+    timer = setTimeout(function () { if (tab !== 'Settings' && tab !== 'Roster' && cur && !document.hidden) loadClass(true); poll(); }, ms);
+  }
+
+  // Live status of the open window and question: "Open, 4:32 left · 12 of 40 marked". Ticks once a second until the next redraw.
+  var tickTimer = null;
+  function remaining() { return D && D.open ? Math.max(0, Math.round((Date.parse(D.open.closesAt) - Date.now()) / 1000)) : 0; }
+  function mmss(secs) { return Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0'); }
+  function statusText() {
+    var q = D.state.questions.filter(isOpenQ)[0];
+    return (D.open
+      ? 'Attendance is OPEN, ' + mmss(remaining()) + ' left (until ' + clock(D.open.close) + ') · ' + D.marks.filter(function (m) { return m.date === D.today; }).length + ' of ' + D.state.roster.length + ' marked'
+      : 'Attendance is closed' + (D.next ? ' · next: ' + shortDate(D.next.date) + ', ' + clock(D.next.open) + ' to ' + clock(D.next.close) : ' · no upcoming class is scheduled'))
+      + (q ? ' · question open: ' + answersOf(q.id).length + ' of ' + D.state.roster.length + ' answered' : '');
+  }
+  /** A status element that updates itself every second; when the window closes it reloads the class once. */
+  function liveStatus(cls) {
+    var e = el('div', { class: cls, text: statusText() }), wasOpen = !!D.open;
+    clearInterval(tickTimer);
+    tickTimer = setInterval(function () {
+      if (!document.contains(e)) { clearInterval(tickTimer); return; }
+      e.textContent = statusText();
+      if (wasOpen && remaining() === 0) { wasOpen = false; loadClass(true); }
+    }, 1000);
+    return e;
   }
 
   function start() {
@@ -281,36 +304,49 @@
   }
   window.addEventListener('beforeunload', function (ev) { if (settingsDirty()) { ev.preventDefault(); ev.returnValue = ''; } });
 
-  /** Full-screen QR code of the student link, for the classroom projector. The status line follows the 10-second grid refresh. */
+  /** Calls fn once the QR library is loaded (from cdnjs on first use). */
+  function withQr(fn) {
+    if (window.qrcode) { fn(); return; }
+    var sc = el('script', { src: 'https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js',
+      on: { load: fn, error: function () { flash = { err: 'The QR code library could not be loaded. Check the internet connection.' }; render(); } } });
+    document.head.appendChild(sc);
+  }
+  function qrPicture() {
+    var qr = window.qrcode(0, 'M');
+    qr.addData(studentLink()); qr.make();
+    var pic = el('div', { class: 'qr' }); pic.innerHTML = qr.createSvgTag({ cellSize: 8, margin: 2, scalable: true });
+    return pic;
+  }
+
+  /** Full-screen QR code of the student link, for the classroom projector, with the live status (attendance and question). */
   function showQr() {
-    var url = studentLink();
-    var draw = function () {
-      var qr = window.qrcode(0, 'M');
-      qr.addData(url); qr.make();
-      var pic = el('div', { class: 'qr' }); pic.innerHTML = qr.createSvgTag({ cellSize: 8, margin: 2, scalable: true });
+    withQr(function () {
       var status = el('p', { class: 'qrstatus' });
-      var tick = function () {
-        if (!D) return;
-        var q = D.state.questions.filter(isOpenQ)[0];
-        status.textContent = (D.open
-          ? 'Open until ' + clock(D.open.close) + ' · ' + D.marks.filter(function (m) { return m.date === D.today; }).length + ' of ' + D.state.roster.length + ' marked'
-          : 'Attendance is closed' + (D.next ? ' · next: ' + shortDate(D.next.date) + ', ' + clock(D.next.open) : ''))
-          + (q ? ' · question open: ' + answersOf(q.id).length + ' of ' + D.state.roster.length + ' answered' : '');
-      };
+      var tick = function () { if (D) status.textContent = statusText(); };
       tick();
-      var iv = setInterval(tick, 2000);
+      var iv = setInterval(tick, 1000);
       var veil, onKey = function (ev) { if (ev.key === 'Escape') done(); };
       var done = function () { clearInterval(iv); veil.remove(); document.removeEventListener('keydown', onKey); };
       veil = el('div', { class: 'veil qrveil', on: { click: done } },
-        el('h1', { text: D ? D.state.title : cur }), pic, el('p', { class: 'qrurl', text: url }), status,
+        el('h1', { text: D ? D.state.title : cur }), qrPicture(), el('p', { class: 'qrurl', text: studentLink() }), status,
         el('p', { class: 'muted', text: 'Click anywhere or press Esc to close.' }));
       document.body.appendChild(veil);
       document.addEventListener('keydown', onKey);
-    };
-    if (window.qrcode) { draw(); return; }
-    var sc = el('script', { src: 'https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js',
-      on: { load: draw, error: function () { flash = { err: 'The QR code library could not be loaded. Check the internet connection.' }; render(); } } });
-    document.head.appendChild(sc);
+    });
+  }
+
+  // ---- QR code tab: the code on the page, with the live status and a full-screen button
+  function qrTab(card) {
+    card.appendChild(liveStatus('banner ' + (D.open ? 'ok' : 'note')));
+    card.appendChild(el('div', { class: 'row', style: 'margin-top:12px' }, button('Full screen', '', showQr),
+      el('span', { class: 'muted', text: 'The full-screen view shows the code, the link, and the live status for the classroom projector; it works during attendance and questions alike.' })));
+    var holder = el('div', { style: 'text-align:center; margin-top:8px' });
+    card.appendChild(holder);
+    withQr(function () {
+      var pic = qrPicture(); pic.style.cssText = 'width:min(50vh, 90%); height:auto; margin:0 auto';
+      holder.appendChild(pic);
+      holder.appendChild(el('p', { class: 'qrurl', style: 'font-size:18px', text: studentLink() }));
+    });
   }
 
   // ---------------------------------------------------------------- rendering
@@ -364,7 +400,7 @@
     });
     app.appendChild(tabs);
     var card = el('div', { class: 'card' });
-    ({ Attendance: attendance, Questions: questions, Settings: settings, Roster: roster })[tab](card);
+    ({ Attendance: attendance, Questions: questions, 'QR code': qrTab, Settings: settings, Roster: roster })[tab](card);
     app.appendChild(card);
     window.scrollTo(0, keepScroll);
   }
@@ -372,18 +408,18 @@
   // ---- Attendance grid
   function attendance(card) {
     var S = D.state;
-    var status = D.open
-      ? el('div', { class: 'banner ok', style: 'margin:0 0 12px', text: 'Attendance is OPEN now, until ' + clock(D.open.close) + '. ' + D.marks.filter(function (m) { return m.date === D.today; }).length + ' of ' + S.roster.length + ' students marked so far.' })
-      : el('div', { class: 'banner note', style: 'margin:0 0 12px', text: 'Attendance is closed. ' + (D.next ? 'Next window: ' + shortDate(D.next.date) + ', ' + clock(D.next.open) + ' to ' + clock(D.next.close) + '.' : 'No upcoming class is scheduled.') });
-    card.appendChild(status);
+    card.appendChild(liveStatus('banner ' + (D.open ? 'ok' : 'note')));
     var minutes = el('input', { type: 'number', min: 1, max: 600, value: 10, style: 'width:70px' });
-    card.appendChild(el('div', { class: 'row' },
-      button('Open attendance now', '', function () {
+    card.appendChild(el('div', { class: 'row', style: 'margin-top:12px' },
+      D.open ? button('Close attendance now', '', function () {
+        ask('Close attendance now?', ['Students can no longer mark themselves present today. The marks made so far are kept. "Open attendance now" reopens it.'], 'Close now', false)
+          .then(function (yes) { if (yes) run('closeNow', [], 'Attendance is closed.'); });
+      }) : null,
+      D.open ? el('span', { class: 'muted', text: '·' }) : null,
+      button('Open attendance now', D.open ? 'plain' : '', function () {
         ask('Open attendance now for ' + minutes.value + ' minutes?', ['Students can mark themselves present until ' + minutes.value + ' minutes from now. Marks made in this window are recorded under today\'s date like any other; the window is listed under Settings.'], 'Open now', false)
           .then(function (yes) { if (yes) run('openNow', [Number(minutes.value)], 'Attendance is open.'); });
       }), el('label', {}, 'for ', minutes, ' minutes'),
-      el('span', { class: 'muted', text: '·' }),
-      button('Show QR code', 'plain', showQr),
       el('span', { class: 'muted', text: '·' }),
       button('Download CSV', 'plain', function () {
         var head = ['Last name', 'First name', 'Email'].concat(D.sessions, ['Present', 'Sessions']);

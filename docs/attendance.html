@@ -93,9 +93,10 @@
       .catch(function (e) { if (e.message !== 'SIGNIN') { flash = 'The page could not load. ' + e.message; render(); } });
   }
 
+  // A hidden tab does not poll; it reloads when shown again.
   function schedule() {
     clearTimeout(timer);
-    if (S && S.authorized) timer = setTimeout(load, Math.min(S.refreshIn || 60000, 6 * 3600000));
+    if (S && S.authorized) timer = setTimeout(function () { if (document.hidden) schedule(); else load(); }, Math.min(S.refreshIn || 30000, 30000));
   }
   document.addEventListener('visibilitychange', function () { if (!document.hidden) load(); });
 

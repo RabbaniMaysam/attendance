@@ -46,10 +46,26 @@ ok(nx && nx.date === '2026-10-13', 'next window after Thursday is next Tuesday')
 
 let r = att.refreshIn(s, edt('2026-10-06', '07:55') + 20000);
 ok(r === 8000, 'refresh every 8 s during class (window open): ' + r);
-ok(att.refreshIn(s, edt('2026-10-06', '09:49')) === 8000 && att.refreshIn(s, edt('2026-10-06', '09:50')) === 6 * 3600000, 'class lasts 2 hours from the opening; then the 6-hour cap');
-r = att.refreshIn(s, edt('2026-10-06', '07:40'));
-ok(r > 9 * 60000 && r < 11 * 60000, 'refresh at the open time while closed: ' + r);
-ok(att.refreshIn(s, edt('2026-10-06', '11:00')) === 6 * 3600000, 'refresh capped at 6 hours when the next window is days away');
+ok(att.refreshIn(s, edt('2026-10-06', '09:49')) === 8000 && att.refreshIn(s, edt('2026-10-06', '09:50')) === 30000, 'class lasts 2 hours from the opening; then the 30 s idle rate');
+r = att.refreshIn(s, edt('2026-10-06', '07:49') + 40000);
+ok(r > 19000 && r < 21000, 'refresh at the open time when it is under 30 s away: ' + r);
+ok(att.refreshIn(s, edt('2026-10-06', '11:00')) === 30000, 'idle rate when the next window is days away');
+w = att.windowAt(s, edt('2026-10-06', '07:55') + 20000);
+ok(w.closesAt === new Date(edt('2026-10-06', '08:01')).toISOString(), 'closesAt is the instant the window closes');
+
+// close now: the weekly window ends at this minute; the day stays in the grid; a later "open now" reopens
+throws(() => att.ADMIN.closeNow(s, edt('2026-10-06', '07:40')), /not open/, 'close now refused while closed');
+att.ADMIN.closeNow(s, edt('2026-10-06', '07:55') + 30000);
+ok(s.cutoff.date === '2026-10-06' && s.cutoff.close === '07:55' && att.windowAt(s, edt('2026-10-06', '07:55') + 31000) === null, 'closed at this minute');
+ok(att.windowsOn(s, '2026-10-06', 2)[0].close === '07:55' && att.nextWindow(s, edt('2026-10-06', '07:56')).date === '2026-10-08', 'window shortened; next is Thursday');
+ok(att.windowAt(s, edt('2026-10-08', '07:55')) !== null, 'other days unaffected');
+att.ADMIN.addExtra(s, '2026-10-06', '07:58', '08:10');
+ok(s.cutoff === null && att.windowAt(s, edt('2026-10-06', '08:05')).close === '08:10', 'open now after an early close reopens');
+att.ADMIN.closeNow(s, edt('2026-10-06', '07:50') + 5000);
+ok(att.windowAt(s, edt('2026-10-06', '07:50') + 6000) === null && att.windowsOn(s, '2026-10-06', 2).length === 2
+  && att.windowsOn(s, '2026-10-06', 2)[1].close === '07:58' && att.nextWindow(s, edt('2026-10-06', '07:52')).date === '2026-10-08',
+  'closing in the opening minute: zero-length windows, listed for the grid but never next');
+s.cutoff = null; s.extra = [];
 
 // settings: skip a holiday, semester bounds, validation
 att.ADMIN.saveSettings(s, { title: 'ECON 101', days: [2, 4], open: '07:50', close: '08:01', start: '2026-09-01', end: '2026-12-15', skip: '2026-11-26, 2026-10-08' });
@@ -101,8 +117,7 @@ throws(() => att.ADMIN.removeStudent(s, 'nobody@x.edu'), /not on the roster/, 'r
 // in-class questions (the student on the roster is khanj6@montclair.edu; a Tuesday during class)
 const t0 = edt('2026-10-06', '08:10');
 ok(att.openQuestion(s, t0) === null && att.refreshIn(s, t0) === 8000, 'no question open; 8 s refresh during class');
-r = att.refreshIn(s, edt('2026-10-06', '07:49'));
-ok(att.refreshIn(s, edt('2026-10-06', '14:00')) > 8000 && r > 59000 && r < 62000, 'slow refresh outside class; one minute before the window: ' + r);
+ok(att.refreshIn(s, edt('2026-10-06', '14:00')) === 30000 && att.refreshIn(s, edt('2026-10-06', '07:49')) === 30000, 'idle refresh outside class');
 throws(() => att.ADMIN.askQuestion(s, 'essay', 0, '', '', 2, t0), /question type/, 'unknown kind refused');
 throws(() => att.ADMIN.askQuestion(s, 'mc', 6, '', '', 2, t0), /2 to 5/, 'six choices refused');
 throws(() => att.ADMIN.askQuestion(s, 'tf', 0, '', 'Yes', 2, t0), /one of True, False/, 'correct answer not among the options refused');

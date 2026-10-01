@@ -9,6 +9,7 @@
  *   schedule   {days: [0-6, 0 = Sunday], open: 'HH:MM', close: 'HH:MM', start: 'YYYY-MM-DD' or '', end: 'YYYY-MM-DD' or ''}
  *   skip       ['YYYY-MM-DD', ...]   scheduled days with no class (holidays)
  *   extra      [{date, open, close}] one-off windows (a moved class, or "open now")
+ *   cutoff     {date, close} or null  "close now": on that date no window stays open past close (HH:MM)
  *   questions  [{id, kind: 'tf' | 'yn' | 'mc', n, text, correct, opened, closes}]  in-class questions, oldest first;
  *              times are ISO instants; a question is open while now < closes. Answers are rows of att_answers.
  * All clock times are New York local time. Marks are stored separately (att_marks), keyed by
@@ -43,8 +44,10 @@ export const DEFAULT_SKIP = ['2026-10-06', '2026-10-20', '2026-10-22', '2026-11-
 
 export function newAttClass(title, nowMs) {
   return { title: title, createdAt: nyParts(nowMs).date, roster: [],
-           schedule: Object.assign({}, DEFAULT_SCHEDULE), skip: DEFAULT_SKIP.slice(), extra: [], questions: [] };
+           schedule: Object.assign({}, DEFAULT_SCHEDULE), skip: DEFAULT_SKIP.slice(), extra: [], cutoff: null, questions: [] };
 }
+
+const hhmm = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
 
 // ---------------------------------------------------------------- in-class questions
 
@@ -70,14 +73,20 @@ export function windowsOn(s, date, weekday) {
       (!sch.start || date >= sch.start) && (!sch.end || date <= sch.end)) {
     out.push({ open: sch.open, close: sch.close, extra: false });
   }
+  // Closed early: the window ends at the cutoff (a window the cutoff precedes keeps its date in the grid, with no open minute).
+  if (s.cutoff && s.cutoff.date === date) {
+    out.forEach(x => { if (toMin(x.close) > toMin(s.cutoff.close)) x.close = hhmm(Math.max(toMin(x.open), toMin(s.cutoff.close))); });
+  }
   return out.sort((a, b) => toMin(a.open) - toMin(b.open));
 }
 
-/** The window open at ms, or null. */
+/** The window open at ms, or null. closesAt: the ISO instant it closes. */
 export function windowAt(s, ms) {
   const p = nyParts(ms);
   const w = windowsOn(s, p.date, p.weekday).find(x => p.minutes >= toMin(x.open) && p.minutes < toMin(x.close));
-  return w ? { date: p.date, open: w.open, close: w.close } : null;
+  if (!w) return null;
+  // Time zone offsets are whole minutes, so the seconds within the UTC minute are the seconds within the New York minute.
+  return { date: p.date, open: w.open, close: w.close, closesAt: new Date(ms + (toMin(w.close) - p.minutes) * 60000 - ms % 60000).toISOString() };
 }
 
 /** The next window that opens after ms, within 70 days, or null. */
@@ -89,7 +98,7 @@ export function nextWindow(s, ms) {
     const p = nyParts(ms + k * 43200000);
     if (p.date === last) continue;
     last = p.date;
-    const w = windowsOn(s, p.date, p.weekday).find(x => p.date > now.date || toMin(x.open) > now.minutes);
+    const w = windowsOn(s, p.date, p.weekday).find(x => toMin(x.close) > toMin(x.open) && (p.date > now.date || toMin(x.open) > now.minutes));
     if (w) return { date: p.date, open: w.open, close: w.close, daysAhead: k === 0 ? 0 : Math.round((k * 43200000) / 86400000) };
   }
   return null;
@@ -98,8 +107,10 @@ export function nextWindow(s, ms) {
 /**
  * Milliseconds until the student page should reload. While a question is open: 3 s. During class
  * (from the day's first window until 2 hours after it opens): 8 s, so a new question appears quickly.
- * Otherwise the moment the attendance window opens or closes, capped at 6 hours.
+ * Otherwise the moment the attendance window opens or closes, at most 30 s away, so an "open now"
+ * or "close now" outside class shows within half a minute.
  */
+const IDLE = 30000;
 export function refreshIn(s, ms) {
   if (openQuestion(s, ms)) return 3000;
   const now = nyParts(ms);
@@ -111,11 +122,10 @@ export function refreshIn(s, ms) {
   if (open) target = (toMin(open.close) - now.minutes) * 60000 - secs;
   else {
     const nx = nextWindow(s, ms);
-    if (!nx) return 6 * 3600000;
-    // Across days the clock-change error is at most an hour; the page recomputes on each reload.
+    if (!nx) return IDLE;
     target = nx.daysAhead * 86400000 + (toMin(nx.open) - now.minutes) * 60000 - secs;
   }
-  return Math.max(1000, Math.min(target + 500, 6 * 3600000));
+  return Math.max(1000, Math.min(target + 500, IDLE));
 }
 
 /** All class dates from the semester start (or the class creation) through today, plus dates that have marks. */
@@ -199,6 +209,14 @@ export const ADMIN = {
     if (!isDate(date)) throw new Error('The date must be YYYY-MM-DD.');
     if (!isTime(open) || !isTime(close) || toMin(close) <= toMin(open)) throw new Error('Times must be HH:MM with close after open.');
     s.extra = s.extra.filter(x => x.date !== date).concat([{ date: date, open: open, close: close }]).sort((a, b) => (a.date < b.date ? -1 : 1));
+    if (s.cutoff && s.cutoff.date === date) s.cutoff = null;  // a new window on the day undoes an early close
+  },
+
+  /** "Close now": ends the open window at this minute. Marks made so far are kept. */
+  closeNow(s, nowMs) {
+    const open = windowAt(s, nowMs);
+    if (!open) throw new Error('Attendance is not open.');
+    s.cutoff = { date: open.date, close: hhmm(nyParts(nowMs).minutes) };
   },
 
   /** Removes the one-off window on a date. Marks made in it stay in att_marks and in the grid. */
@@ -301,13 +319,12 @@ function sortRoster(s) {
 export function openNowWindow(nowMs, minutes) {
   const n = Math.min(Math.max(Number(minutes) || 0, 1), 600);
   const p = nyParts(nowMs);
-  const hhmm = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
   return { date: p.date, open: hhmm(p.minutes), close: hhmm(Math.min(p.minutes + n, 1439)) };
 }
 
 /** Fills in fields added later. */
 export function upgradeAtt(s) {
-  s.roster = s.roster || []; s.skip = s.skip || []; s.extra = s.extra || []; s.questions = s.questions || [];
+  s.roster = s.roster || []; s.skip = s.skip || []; s.extra = s.extra || []; s.questions = s.questions || []; s.cutoff = s.cutoff || null;
   s.schedule = Object.assign({}, DEFAULT_SCHEDULE, s.schedule || {});
   delete s.sessions;
   return s;

@@ -150,12 +150,26 @@ r = await attStu(1, 'mark');
 ok(r.ok && r.state.marked === firstMark, 'second press keeps the first time');
 r = await att('get');
 const round1 = r.data.open.id;
-ok(r.data.marks.length === 1 && r.data.marks[0].email === m(1) && r.data.marks[0].round === round1 && r.data.marks[0].by === 'student'
-  && r.data.rounds.some(x => x.id === round1), 'instructor sees the mark and the open round');
+ok(r.data.marks.length === 1 && r.data.marks[0].email === m(1) && r.data.marks[0].round === round1 && r.data.marks[0].self === firstMark
+  && r.data.marks[0].present === 1 && r.data.marks[0].edited === null && r.data.rounds.some(x => x.id === round1), 'instructor sees the mark and the open round');
 r = await att('setMark', [round1, m(2), true]);
-ok(r.data.marks.length === 2 && r.data.marks.find(x => x.email === m(2)).by === 'instructor', 'instructor marks a student');
+let mk = r.data.marks.find(x => x.email === m(2));
+ok(r.data.marks.length === 2 && mk.present === 1 && mk.self === null && mk.edited && mk.by === 'prof@gmail.com', 'instructor marks a student (change +1)');
 r = await att('setMark', [round1, m(2), false]);
-ok(r.data.marks.length === 1, 'instructor clears a mark');
+ok(r.data.marks.length === 1, 'instructor clears a mark the student never made: no row is left');
+// Setting a student's own mark absent keeps the row, so the manual change (-1) is on record; setting it present again is change 0.
+r = await att('setMark', [round1, m(1), false]);
+mk = r.data.marks.find(x => x.email === m(1));
+ok(r.data.marks.length === 1 && mk.present === 0 && mk.self === firstMark && mk.edited && mk.by === 'prof@gmail.com', 'instructor sets a marked student absent (change -1)');
+r = await attStu(1, 'state');
+ok(r.state.marked === '' && r.state.today.length === 0, 'the student is no longer marked');
+r = await attStu(1, 'mark');
+ok(r.state.marked === firstMark && (await att('get')).data.marks.find(x => x.email === m(1)).present === 1, 'a press while the round is open makes the student present again, first time kept');
+await att('setMark', [round1, m(1), false]);
+r = await att('setMark', [round1, m(1), true]);
+mk = r.data.marks.find(x => x.email === m(1));
+ok(mk.present === 1 && mk.self === firstMark, 'set present again: the student\'s own time is kept (change 0)');
+ok((await attStu(1, 'state')).state.marked === firstMark, 'the student is marked again with the original time');
 r = await att('setMark', ['2026-01-05 10:00', m(2), true]);
 ok(r.data.marks.length === 2 && r.data.rounds[0].id === '2026-01-05 10:00' && r.data.rounds[0].close === '', 'a mark in a past round lists that round');
 ok(/round and an email/.test((await att('setMark', ['2026-01-05', m(2), true])).error), 'a date alone is not a round');

@@ -306,8 +306,10 @@ async function attStudentCall(env, real, action, key, args) {
     if (!att.student(s, real)) throw new Error('This account is not on the class roster.');
     const open = att.windowAt(s, now);
     if (!open) throw new Error('Attendance is not open right now.');
-    await env.DB.prepare('INSERT OR IGNORE INTO att_marks (class, round, email, time, by) VALUES (?, ?, ?, ?, ?)')
-      .bind(key, open.id, real, new Date(now).toISOString(), 'student').run();
+    // The first press sets self; a later press (also after the instructor set the student absent) makes the round present again.
+    await env.DB.prepare('INSERT INTO att_marks (class, round, email, self, present) VALUES (?, ?, ?, ?, 1) '
+      + 'ON CONFLICT (class, round, email) DO UPDATE SET self = COALESCE(self, excluded.self), present = 1')
+      .bind(key, open.id, real, new Date(now).toISOString()).run();
   } else if (action === 'answer') {
     if (!att.student(s, real)) throw new Error('This account is not on the class roster.');
     const label = att.checkAnswer(s, args[0], args[1], now);
@@ -315,7 +317,7 @@ async function attStudentCall(env, real, action, key, args) {
       .bind(key, String(args[0]), real, label, new Date(now).toISOString()).run();
   } else if (action !== 'state') throw new Error('Unknown action.');
   // The student's own marks of today's rounds (round ids start with the date).
-  const marks = (await env.DB.prepare('SELECT round, time FROM att_marks WHERE class = ? AND email = ? AND round >= ? AND round < ?')
+  const marks = (await env.DB.prepare('SELECT round, COALESCE(self, edited) AS time FROM att_marks WHERE class = ? AND email = ? AND present = 1 AND round >= ? AND round < ?')
     .bind(key, real, date + ' ', date + '~').all()).results;
   const answers = s.questions.length
     ? (await env.DB.prepare('SELECT qid, answer FROM att_answers WHERE class = ? AND email = ?').bind(key, real).all()).results : [];
@@ -354,11 +356,17 @@ async function attAdminCall(env, real, action, key, args) {
     // Instructor override: present (true) or absent (false) for one student in one round.
     const round = String(args[0] || ''), email = canonEmail(args[1]);
     if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(round) || !email) throw new Error('A round and an email are needed.');
+    // The student's own mark (self) is kept, so the row records the manual change: present - (self set) is +1, -1, or 0.
+    const stamp = new Date(now).toISOString();
     if (args[2]) {
-      await env.DB.prepare('INSERT OR REPLACE INTO att_marks (class, round, email, time, by) VALUES (?, ?, ?, ?, ?)')
-        .bind(key, round, email, new Date(now).toISOString(), 'instructor').run();
+      await env.DB.prepare('INSERT INTO att_marks (class, round, email, present, edited, by) VALUES (?, ?, ?, 1, ?, ?) '
+        + 'ON CONFLICT (class, round, email) DO UPDATE SET present = 1, edited = excluded.edited, by = excluded.by')
+        .bind(key, round, email, stamp, real).run();
     } else {
-      await env.DB.prepare('DELETE FROM att_marks WHERE class = ? AND round = ? AND email = ?').bind(key, round, email).run();
+      await env.DB.batch([
+        env.DB.prepare('UPDATE att_marks SET present = 0, edited = ?, by = ? WHERE class = ? AND round = ? AND email = ?').bind(stamp, real, key, round, email),
+        env.DB.prepare('DELETE FROM att_marks WHERE class = ? AND round = ? AND email = ? AND self IS NULL').bind(key, round, email)
+      ]);
     }
   } else if (action === 'openNow') {
     att.ADMIN.openNow(s, args[0], now);
@@ -386,7 +394,7 @@ async function attAdminCall(env, real, action, key, args) {
     await writeAtt(env, key, s);
   } else if (action !== 'get') throw new Error('Unknown action.');
 
-  const marks = (await env.DB.prepare('SELECT round, email, time, by FROM att_marks WHERE class = ? ORDER BY round, email').bind(key).all()).results;
+  const marks = (await env.DB.prepare('SELECT round, email, self, present, edited, by FROM att_marks WHERE class = ? ORDER BY round, email').bind(key).all()).results;
   const ids = marks.map(m => m.round).filter((d, i, a) => a.indexOf(d) === i);
   const answers = s.questions.length
     ? (await env.DB.prepare('SELECT qid, email, answer, time FROM att_answers WHERE class = ?').bind(key).all()).results : [];

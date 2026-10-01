@@ -42,6 +42,10 @@
     .choice.right { border-color: var(--ok); background: #e8f5ec; color: var(--ok); }
     .choice.wrong { border-color: var(--warn); background: #fdecea; color: var(--warn); }
     .choice:disabled { cursor: default; }
+    .choice.submit { display: block; width: 100%; margin-top: 10px; color: #fff; background: var(--accent); border-color: var(--accent); }
+    .choice.shown { font-size: 20px; font-weight: 600; white-space: pre-wrap; cursor: default; }
+    .answer { display: block; width: 100%; padding: 12px; font: inherit; font-size: 20px; border: 2px solid var(--line); border-radius: 12px; resize: vertical; }
+    .answer:focus { border-color: var(--accent); outline: none; }
     .qnote { margin-top: 10px; text-align: center; }
     button.link { border: 0; background: none; color: var(--accent); padding: 0; text-decoration: underline; font: inherit; cursor: pointer; }
     #signin { margin-top: 16px; }
@@ -120,6 +124,16 @@
   function answer(id, label) {
     busy = true; render();
     api('answer', [id, label]).then(function (s) { busy = false; S = s; flash = ''; render(); schedule(); })
+      .catch(function (e) { busy = false; if (e.message !== 'SIGNIN') { flash = e.message; load(); } });
+  }
+
+  // The text typed for an open question; survives the page's refreshes, cleared once the answer is recorded.
+  var textDraft = { id: '', text: '' };
+  function submitText(q) {
+    var t = textDraft.text.trim();
+    if (!t) { flash = 'Type an answer first.'; render(); return; }
+    busy = true; render();
+    api('answer', [q.id, t]).then(function (s) { busy = false; S = s; flash = ''; textDraft = { id: '', text: '' }; render(); schedule(); })
       .catch(function (e) { busy = false; if (e.message !== 'SIGNIN') { flash = e.message; load(); } });
   }
 
@@ -242,20 +256,42 @@
       var qc = el('div', { class: 'card qcard' });
       qc.appendChild(el('p', { class: 'muted', style: 'margin:0 0 6px', text: q.open ? 'Question (closes at ' + isoClock(q.closes) + ')' : 'Question closed' }));
       if (q.text) qc.appendChild(el('p', { class: 'qtext', text: q.text }));
-      var grid = el('div', { class: 'choices', style: q.options.length <= 2 ? 'grid-template-columns:1fr 1fr' : '' });
-      q.options.forEach(function (o) {
-        var cls = 'choice';
-        if (!q.open && q.correct) cls += o === q.correct ? ' right' : (o === q.answered ? ' wrong' : '');
-        else if (o === q.answered) cls += ' picked';
-        grid.appendChild(el('button', { class: cls, disabled: busy || !q.open, text: o,
-          on: { click: function () { if (q.open && o !== q.answered) answer(q.id, o); } } }));
-      });
-      qc.appendChild(grid);
       var note;
-      if (q.open) note = q.answered ? 'Your answer: ' + q.answered + '. You can change it until the question closes.' : 'Choose one answer.';
-      else if (!q.answered) note = 'You did not answer.';
-      else if (q.correct) note = q.answered === q.correct ? 'Correct.' : 'Your answer: ' + q.answered + '. Correct answer: ' + q.correct + '.';
-      else note = 'Your answer: ' + q.answered + '.';
+      if (q.kind === 'open') {
+        // Open answer: a text box and a Submit button while open; the box keeps its text and focus across refreshes.
+        if (q.open) {
+          if (textDraft.id !== q.id) textDraft = { id: q.id, text: '' };
+          var hadFocusT = document.activeElement && document.activeElement.id === 'answer';
+          var box = el('textarea', { id: 'answer', class: 'answer', rows: 2, maxlength: 500, placeholder: q.answered ? 'Type a new answer to replace yours' : 'Type your answer' });
+          box.value = textDraft.text;
+          box.addEventListener('input', function () { textDraft.text = box.value; });
+          box.addEventListener('keydown', function (ev) { if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); submitText(q); } });
+          qc.appendChild(box);
+          if (hadFocusT) setTimeout(function () { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }, 0);
+          qc.appendChild(el('button', { class: 'choice submit', disabled: busy, text: busy ? 'Sending...' : (q.answered ? 'Replace my answer' : 'Submit'),
+            on: { click: function () { submitText(q); } } }));
+        } else if (q.answered) {
+          qc.appendChild(el('div', { class: 'choice ' + (q.correct ? (q.right ? 'right' : 'wrong') : 'picked') + ' shown', text: q.answered }));
+        }
+        if (q.open) note = q.answered ? 'Your answer: ' + q.answered + '. You can replace it until the question closes.' : 'Type your answer and press Submit.';
+        else if (!q.answered) note = 'You did not answer.';
+        else if (q.correct) note = q.right ? 'Correct.' : 'Correct answer: ' + q.correct + '.';
+        else note = 'Your answer was recorded.';
+      } else {
+        var grid = el('div', { class: 'choices', style: q.options.length <= 2 ? 'grid-template-columns:1fr 1fr' : '' });
+        q.options.forEach(function (o) {
+          var cls = 'choice';
+          if (!q.open && q.correct) cls += o === q.correct ? ' right' : (o === q.answered ? ' wrong' : '');
+          else if (o === q.answered) cls += ' picked';
+          grid.appendChild(el('button', { class: cls, disabled: busy || !q.open, text: o,
+            on: { click: function () { if (q.open && o !== q.answered) answer(q.id, o); } } }));
+        });
+        qc.appendChild(grid);
+        if (q.open) note = q.answered ? 'Your answer: ' + q.answered + '. You can change it until the question closes.' : 'Choose one answer.';
+        else if (!q.answered) note = 'You did not answer.';
+        else if (q.correct) note = q.answered === q.correct ? 'Correct.' : 'Your answer: ' + q.answered + '. Correct answer: ' + q.correct + '.';
+        else note = 'Your answer: ' + q.answered + '.';
+      }
       qc.appendChild(el('p', { class: 'muted qnote', text: note }));
       app.appendChild(qc);
     }

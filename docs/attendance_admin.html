@@ -942,9 +942,18 @@
   }
 
   // ---- Questions
-  var KIND_NAMES = { tf: 'True / False', yn: 'Yes / No', mc: 'Multiple choice' };
-  var KIND_OPTIONS = { tf: ['True', 'False'], yn: ['Yes', 'No'], mc: ['A', 'B', 'C', 'D', 'E'] };
+  var KIND_NAMES = { tf: 'True / False', yn: 'Yes / No', mc: 'Multiple choice', open: 'Open answer' };
+  var KIND_OPTIONS = { tf: ['True', 'False'], yn: ['Yes', 'No'], mc: ['A', 'B', 'C', 'D', 'E'], open: [] };
   function optionsOf(q) { return q.kind === 'mc' ? KIND_OPTIONS.mc.slice(0, q.n) : KIND_OPTIONS[q.kind]; }
+  // Same rule as isRight in worker/src/attendance.js: labels compare exactly; open answers ignore case and spacing, numbers compare as numbers.
+  function isRight(q, answer) {
+    if (!q.correct || !answer) return false;
+    if (q.kind !== 'open') return answer === q.correct;
+    var a = String(answer).trim(), c = q.correct;
+    var na = Number(a.replace(/,/g, '')), nc = Number(c.replace(/,/g, ''));
+    if (a !== '' && c !== '' && isFinite(na) && isFinite(nc)) return na === nc;
+    return a.toLowerCase().replace(/\s+/g, ' ') === c.toLowerCase().replace(/\s+/g, ' ');
+  }
   function isOpenQ(q) { return Date.parse(q.closes) > Date.now(); }
   function answersOf(qid) { return D.answers.filter(function (a) { return a.qid === qid; }); }
   function qLabel(q, i) { return 'Q' + (i + 1) + (q.text ? ': ' + (q.text.length > 60 ? q.text.slice(0, 57) + '...' : q.text) : ' (' + KIND_NAMES[q.kind] + ')'); }
@@ -958,39 +967,47 @@
 
     // ask panel
     card.appendChild(el('h2', { text: 'Ask a question' }));
-    var kind = el('select', {}, el('option', { value: 'tf', text: 'True / False' }), el('option', { value: 'yn', text: 'Yes / No' }), el('option', { value: 'mc', text: 'Multiple choice' }));
+    var kind = el('select', {}, el('option', { value: 'tf', text: 'True / False' }), el('option', { value: 'yn', text: 'Yes / No' }), el('option', { value: 'mc', text: 'Multiple choice' }),
+                  el('option', { value: 'open', text: 'Open answer (text box)' }));
     kind.value = askDraft.kind;
     var n = el('select', {}); [2, 3, 4, 5].forEach(function (k) { n.appendChild(el('option', { value: k, text: k + ' choices (A to ' + 'ABCDE'[k - 1] + ')' })); });
     n.value = String(askDraft.n);
-    var correct = el('select', {});
+    // The correct answer: a choice of the labels, or for an open question a text box (a number or a short text).
+    var correct = el('select', {}), correctTxt = el('input', { type: 'text', maxlength: 200, placeholder: 'optional, e.g. 42', style: 'width:160px' });
+    correctTxt.value = askDraft.kind === 'open' ? askDraft.correct : '';
     var fillCorrect = function () {
+      var isOpenKind = kind.value === 'open';
       correct.innerHTML = '';
       correct.appendChild(el('option', { value: '', text: 'no correct answer' }));
       optionsOf({ kind: kind.value, n: Number(n.value) }).forEach(function (o) { correct.appendChild(el('option', { value: o, text: o })); });
-      correct.value = askDraft.correct;
-      if (correct.value !== askDraft.correct) { correct.value = ''; askDraft.correct = ''; }
+      if (!isOpenKind) {
+        correct.value = askDraft.correct;
+        if (correct.value !== askDraft.correct) { correct.value = ''; askDraft.correct = ''; }
+      }
+      correct.style.display = isOpenKind ? 'none' : '';
+      correctTxt.style.display = isOpenKind ? '' : 'none';
       n.style.display = kind.value === 'mc' ? '' : 'none';
     };
     fillCorrect();
     var qtext = el('textarea', { value: askDraft.text, placeholder: 'optional: the question text, if it is not on the board or the slide', rows: 2 });
     var mins = el('input', { type: 'number', min: 1, max: 600, value: askDraft.minutes, style: 'width:70px' });
     var edited = function () {
-      askDraft = { kind: kind.value, n: Number(n.value), text: qtext.value, correct: correct.value, minutes: Number(mins.value) || 2 };
+      askDraft = { kind: kind.value, n: Number(n.value), text: qtext.value, correct: kind.value === 'open' ? correctTxt.value : correct.value, minutes: Number(mins.value) || 2 };
       fillCorrect();
     };
     [kind, n, correct, mins].forEach(function (x) { x.addEventListener('change', edited); });
-    qtext.addEventListener('input', edited); mins.addEventListener('input', edited);
-    card.appendChild(el('div', { class: 'row' }, kind, n, el('label', {}, 'Correct answer: ', correct), el('label', {}, 'open for ', mins, ' minutes')));
+    qtext.addEventListener('input', edited); mins.addEventListener('input', edited); correctTxt.addEventListener('input', edited);
+    card.appendChild(el('div', { class: 'row' }, kind, n, el('label', {}, 'Correct answer: ', correct, correctTxt), el('label', {}, 'open for ', mins, ' minutes')));
     card.appendChild(qtext);
     card.appendChild(el('div', { class: 'row', style: 'margin-top:8px' },
       button('Ask', '', function () {
         edited();
-        var sent = askDraft.text;
-        askDraft.text = ''; askDraft.correct = '';  // the next question starts with empty text and no correct answer
+        var sent = askDraft.text, sentCorrect = askDraft.correct;
+        askDraft.text = ''; askDraft.correct = ''; correctTxt.value = '';  // the next question starts with empty text and no correct answer
         qSel = '';
-        run('askQuestion', [askDraft.kind, askDraft.n, sent, correct.value, askDraft.minutes], 'The question is open.');
+        run('askQuestion', [askDraft.kind, askDraft.n, sent, sentCorrect, askDraft.minutes], 'The question is open.');
       }),
-      el('span', { class: 'muted', text: (open ? 'Asking a new question closes the open one. ' : '') + 'Students answer on their page, which refreshes every few seconds during class. They can change their answer until the question closes. Set the correct answer now or later; students see it once the question closes.' })));
+      el('span', { class: 'muted', text: (open ? 'Asking a new question closes the open one. ' : '') + 'Students answer on their page, which refreshes every few seconds during class. They can change their answer until the question closes. Set the correct answer now or later; students see it once the question closes. An open answer is a text box (a number, a word, a sentence); its correct answer, if set, is matched ignoring case and spacing, and numbers as numbers.' })));
     if (!S.questions.length) { card.appendChild(el('p', { class: 'muted', style: 'margin-top:14px', text: 'No question has been asked yet.' })); return; }
 
     // the selected question (default: the open one, else the latest) with live results
@@ -1001,18 +1018,35 @@
     card.appendChild(el('div', { class: 'banner ' + (isOpen ? 'ok' : 'note'), style: 'margin:0 0 10px',
       text: (isOpen ? 'OPEN, closes in ' + Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0') : 'Closed') +
             ' · asked ' + isoClock(sel.opened) + ' · ' + ans.length + ' of ' + roster.length + ' answered' +
-            (sel.correct ? ' · correct: ' + sel.correct + ' (' + ans.filter(function (a) { return a.answer === sel.correct; }).length + ' right)' : '') }));
+            (sel.correct ? ' · correct: ' + sel.correct + ' (' + ans.filter(function (a) { return isRight(sel, a.answer); }).length + ' right)' : '') }));
+    // Bars per label; for an open question, per distinct answer (most frequent first, equal answers merged by the matching rule).
     var bars = el('table', { style: 'max-width:520px' });
-    opts.forEach(function (o) {
-      var k = ans.filter(function (a) { return a.answer === o; }).length, pct = ans.length ? Math.round(100 * k / ans.length) : 0;
-      bars.appendChild(el('tr', {}, el('td', { style: 'width:60px; font-weight:700' + (o === sel.correct ? '; color:var(--ok)' : ''), text: o + (o === sel.correct ? ' ✓' : '') }),
-        el('td', { style: 'width:100%' }, el('div', { style: 'height:18px; border-radius:4px; background:' + (o === sel.correct ? '#b9dfc4' : '#c9d9ec') + '; width:' + Math.max(pct, 1) + '%' })),
-        el('td', { style: 'text-align:right; white-space:nowrap', text: k + ' (' + pct + '%)' })));
+    var groups;
+    if (sel.kind === 'open') {
+      groups = [];
+      ans.forEach(function (a) {
+        var g = groups.filter(function (x) { return isRight({ kind: 'open', correct: x.label }, a.answer); })[0];
+        if (g) g.k++; else groups.push({ label: a.answer, k: 1 });
+      });
+      groups.sort(function (a, b) { return b.k - a.k; });
+    } else {
+      groups = opts.map(function (o) { return { label: o, k: ans.filter(function (a) { return a.answer === o; }).length }; });
+    }
+    groups.forEach(function (g) {
+      var pct = ans.length ? Math.round(100 * g.k / ans.length) : 0, hit = isRight(sel, g.label);
+      bars.appendChild(el('tr', {}, el('td', { style: (sel.kind === 'open' ? 'max-width:240px; white-space:normal' : 'width:60px') + '; font-weight:700' + (hit ? '; color:var(--ok)' : ''), text: g.label + (hit ? ' ✓' : '') }),
+        el('td', { style: 'width:100%' }, el('div', { style: 'height:18px; border-radius:4px; background:' + (hit ? '#b9dfc4' : '#c9d9ec') + '; width:' + Math.max(pct, 1) + '%' })),
+        el('td', { style: 'text-align:right; white-space:nowrap', text: g.k + ' (' + pct + '%)' })));
     });
+    if (sel.kind === 'open' && !groups.length) bars.appendChild(el('tr', {}, el('td', { class: 'muted', text: 'No answer yet.' })));
     card.appendChild(bars);
-    var setC = el('select', {}, el('option', { value: '', text: 'no correct answer' }));
-    opts.forEach(function (o) { setC.appendChild(el('option', { value: o, text: o })); });
-    setC.value = sel.correct;
+    var setC;
+    if (sel.kind === 'open') { setC = el('input', { type: 'text', maxlength: 200, placeholder: 'none', style: 'width:160px' }); setC.value = sel.correct; }
+    else {
+      setC = el('select', {}, el('option', { value: '', text: 'no correct answer' }));
+      opts.forEach(function (o) { setC.appendChild(el('option', { value: o, text: o })); });
+      setC.value = sel.correct;
+    }
     var more = el('input', { type: 'number', min: 1, max: 600, value: 1, style: 'width:60px' });
     card.appendChild(el('div', { class: 'row', style: 'margin-top:8px' },
       isOpen ? button('Close now', '', function () { run('closeQuestion', [sel.id], 'The question is closed.'); }) : null,
@@ -1030,7 +1064,7 @@
     roster.forEach(function (r) {
       var a = byMailA[r.email];
       at.appendChild(el('tr', {}, el('td', { text: fullName(r) }),
-        el('td', { style: a && sel.correct ? 'font-weight:600; color:' + (a.answer === sel.correct ? 'var(--ok)' : 'var(--warn)') : '', text: a ? a.answer : '' }),
+        el('td', { style: (a && sel.correct ? 'font-weight:600; color:' + (isRight(sel, a.answer) ? 'var(--ok)' : 'var(--warn)') + ';' : '') + (sel.kind === 'open' ? ' white-space:pre-wrap; max-width:360px' : ''), text: a ? a.answer : '' }),
         el('td', { class: 'muted', text: a ? isoClock(a.time) : '' })));
     });
     ans.filter(function (a) { return !byMail[a.email]; }).forEach(function (a) {  // answers of students since removed from the roster
@@ -1048,7 +1082,7 @@
         el('td', { text: KIND_NAMES[q.kind] + (q.kind === 'mc' ? ' (' + q.n + ')' : '') }),
         el('td', { style: 'white-space:normal; max-width:360px', text: q.text }), el('td', { text: q.correct }),
         el('td', { text: a.length + ' / ' + roster.length }),
-        el('td', { text: q.correct ? String(a.filter(function (x) { return x.answer === q.correct; }).length) : '' }),
+        el('td', { text: q.correct ? String(a.filter(function (x) { return isRight(q, x.answer); }).length) : '' }),
         el('td', {}, q === sel ? null : el('button', { class: 'link', text: 'Show', on: { click: function () { qSel = q.id; render(); } } }))));
     });
     card.appendChild(el('div', { class: 'scroll' }, ht));
@@ -1057,7 +1091,7 @@
       var rows = [head].concat(roster.map(function (r) {
         var cells = S.questions.map(function (q) { var a = answersOf(q.id).filter(function (x) { return x.email === r.email; })[0]; return a ? a.answer : ''; });
         return [r.last, r.first, r.email].concat(cells, [cells.filter(Boolean).length,
-          S.questions.filter(function (q, i) { return q.correct && cells[i] === q.correct; }).length]);
+          S.questions.filter(function (q, i) { return isRight(q, cells[i]); }).length]);
       }));
       rows.push(['Correct answer', '', ''].concat(S.questions.map(function (q) { return q.correct; })));
       rows.push(['Text', '', ''].concat(S.questions.map(function (q) { return q.text; })));

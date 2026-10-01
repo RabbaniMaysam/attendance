@@ -259,6 +259,22 @@ ok(r.ok && r.data.state.questions.length === 2 && r.data.question.kind === 'tf' 
 ok(/one of True, False/.test((await att('askQuestion', ['tf', 0, '', 'A', 1])).error), 'bad correct answer refused');
 r = await att('deleteQuestion', [qid]);
 ok(r.ok && r.data.state.questions.length === 1 && r.data.answers.length === 0, 'first question and its answers deleted');
+// an open-answer question: typed text, stored verbatim (trimmed), judged against a text correct answer
+r = await att('askQuestion', ['open', 0, 'Elasticity?', '1500', 1]);
+const oid = r.ok && r.data.question && r.data.question.id;
+ok(oid && r.data.question.kind === 'open' && r.data.question.correct === '1500', 'open question asked');
+r = await attStu(1, 'answer', [oid, '  1,500.0 ']);
+ok(r.ok && r.state.question.answered === '1,500.0' && r.state.question.options.length === 0, 'typed answer stored trimmed');
+ok(/Type an answer/.test((await attStu(2, 'answer', [oid, '  '])).error), 'empty typed answer refused');
+r = await attStu(2, 'answer', [oid, 'about 1500, I think']);
+ok(r.ok && r.state.question.answered === 'about 1500, I think', 'free text stored');
+r = await att('closeQuestion', [oid]);
+r = await attStu(1, 'state');
+ok(r.ok && !r.state.question.open && r.state.question.correct === '1500' && r.state.question.right === true, 'numeric answer judged right after closing');
+r = await attStu(2, 'state');
+ok(r.ok && r.state.question.right === false, 'free text judged wrong');
+r = await att('deleteQuestion', [oid]);
+ok(r.ok && r.data.answers.length === 0, 'open question and its answers deleted');
 // Removing a round deletes its marks. A scheduled round is listed as removed (no window that day) until restored.
 r = await att('get');
 const nMarks = r.data.marks.length;

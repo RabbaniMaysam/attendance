@@ -323,7 +323,7 @@ async function attStudentCall(env, real, action, key, args) {
       const label = att.checkAnswer(s, args[0], args[1], now);
       await env.DB.prepare('INSERT OR REPLACE INTO att_answers (class, qid, email, answer, time) VALUES (?, ?, ?, ?, ?)')
         .bind(key, String(args[0]), real, label, new Date(now).toISOString()).run();
-      await attLog(env, key, real, 'answer', label + ' to question ' + args[0]);
+      await attLog(env, key, real, 'answer', label.slice(0, 100) + ' to question ' + args[0]);
     } else if (action !== 'state') throw new Error('Unknown action.');
   } catch (err) {
     await attLog(env, key, real, 'refused: ' + action, err.message);

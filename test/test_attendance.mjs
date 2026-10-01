@@ -169,6 +169,26 @@ ok(att.openQuestion(s, t0 + 310000) === q2 && !att.isQuestionOpen(q1, t0 + 31000
 att.ADMIN.setCorrect(s, q2.id, 'false');
 ok(q2.correct === 'False', 'correct answer set later');
 throws(() => att.ADMIN.setCorrect(s, q2.id, 'B'), /one of True, False/, 'bad correct answer refused');
+// open-answer questions: students type the answer; the correct answer is free text, matched loosely
+const t1 = t0 + 400000;
+const q3 = att.ADMIN.askQuestion(s, 'open', 0, 'What is the elasticity?', ' 1,500 ', 3, t1);
+ok(q3.kind === 'open' && q3.n === 0 && att.options(q3).length === 0 && q3.correct === '1,500' && att.openQuestion(s, t1) === q3 && !att.isQuestionOpen(q2, t1),
+  'open question asked with a text correct answer; it closes the open one');
+ok(att.checkAnswer(s, q3.id, '  1500\r\n', t1 + 1000) === '1500', 'typed answer trimmed and stored as text');
+throws(() => att.checkAnswer(s, q3.id, '   ', t1 + 1000), /Type an answer/, 'an empty answer refused');
+ok(att.checkAnswer(s, q3.id, 'x'.repeat(600), t1 + 1000).length === 500, 'answers capped at 500 characters');
+ok(att.isRight(q3, '1500') && att.isRight(q3, '1,500.0') && att.isRight(q3, ' 1500 ') && !att.isRight(q3, '1501') && !att.isRight(q3, ''), 'numbers compare as numbers');
+att.ADMIN.setCorrect(s, q3.id, 'Supply  Curve');
+ok(q3.correct === 'Supply  Curve' && att.isRight(q3, 'supply curve') && att.isRight(q3, 'SUPPLY   CURVE') && !att.isRight(q3, 'supply'), 'text compares ignoring case and spacing');
+att.ADMIN.setCorrect(s, q3.id, '');
+ok(q3.correct === '' && !att.isRight(q3, 'anything'), 'no correct answer: nothing is right');
+ok(att.isRight(q1, 'B') && !att.isRight(q1, 'b'), 'choice labels compare exactly');
+v = att.studentView(s, 'khanj6@montclair.edu', null, t1 + 1000, id => (id === q3.id ? { answer: 'abc' } : null));
+ok(v.question.kind === 'open' && v.question.open && v.question.answered === 'abc' && v.question.right === false && v.question.options.length === 0, 'student view: open question with the typed answer');
+att.ADMIN.setCorrect(s, q3.id, 'ABC');
+v = att.studentView(s, 'khanj6@montclair.edu', null, t1 + 200000, id => (id === q3.id ? { answer: 'abc' } : null));
+ok(!v.question.open && v.question.correct === 'ABC' && v.question.right === true, 'student view after closing: correct answer shown and the answer judged right');
+att.ADMIN.deleteQuestion(s, q3.id);
 att.ADMIN.deleteQuestion(s, q1.id);
 ok(s.questions.length === 1 && att.question(s, q1.id) === null, 'question deleted');
 throws(() => att.ADMIN.deleteQuestion(s, q1.id), /no longer exists/, 'deleting twice refused');
@@ -288,6 +308,13 @@ const src = /function sessionCode\(secret, slot\) \{[\s\S]*?\r?\n  \}\r?\n/.exec
 ok(!!src, 'the page has sessionCode(secret, slot)');
 const pageCode = new Function(src[0] + ' return sessionCode;')();
 ok([0, 1, 2, 3].every(k => pageCode(g.secret, slot + k) === att.sessionCode(g, slot + k)) && pageCode('abc', 7) === att.sessionCode({ secret: 'abc' }, 7), 'the page\'s codes equal the Worker\'s');
+// ... and judges answers with its own copy of isRight
+const srcR = /function isRight\(q, answer\) \{[\s\S]*?\r?\n  \}\r?\n/.exec(page);
+ok(!!srcR, 'the page has isRight(q, answer)');
+const pageRight = new Function(srcR[0] + ' return isRight;')();
+const cases = [[{ kind: 'open', correct: '1,500' }, '1500.0'], [{ kind: 'open', correct: 'Supply Curve' }, ' supply   curve '], [{ kind: 'open', correct: '5' }, 'five'],
+               [{ kind: 'open', correct: '' }, '0'], [{ kind: 'mc', correct: 'B' }, 'B'], [{ kind: 'mc', correct: 'B' }, 'b'], [{ kind: 'open', correct: 'x' }, '']];
+ok(cases.every(([q, a]) => pageRight(q, a) === att.isRight(q, a)) && cases.map(([q, a]) => att.isRight(q, a)).join() === 'true,true,false,false,true,false,false', 'the page\'s isRight equals the Worker\'s');
 
 // ---- removing a round: a one-off window goes; a scheduled round is listed as removed until restored (marks: the Worker)
 att.ADMIN.openNow(g, 5, edt('2026-09-17', '12:00'));

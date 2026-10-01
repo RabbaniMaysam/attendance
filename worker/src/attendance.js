@@ -15,7 +15,7 @@
  *              the percentages, and the points (their marks are kept; a date can be included again)
  *   removed    [round id, ...]      scheduled rounds removed with "remove round" (their marks are deleted by the
  *              Worker); the day has no scheduled window until the round is restored
- *   questions  [{id, kind: 'tf' | 'yn' | 'mc', n, text, correct, opened, closes}]  in-class questions, oldest first;
+ *   questions  [{id, kind: 'tf' | 'yn' | 'mc' | 'open', n, text, correct, opened, closes}]  in-class questions, oldest first;
  *              times are ISO instants; a question is open while now < closes. Answers are rows of att_answers.
  *   points     {mode: 'per' | 'total', value}  attendance points: per session, or a total divided equally
  *              among all sessions of the semester (see sessionDates and report)
@@ -97,9 +97,21 @@ export const counts = (s, date) => (s.exclude || []).indexOf(date) === -1;
 
 // ---------------------------------------------------------------- in-class questions
 
-const KINDS = { tf: ['True', 'False'], yn: ['Yes', 'No'], mc: ['A', 'B', 'C', 'D', 'E'] };
-/** The answer labels of a question. */
+const KINDS = { tf: ['True', 'False'], yn: ['Yes', 'No'], mc: ['A', 'B', 'C', 'D', 'E'], open: [] };
+/** The answer labels of a question (none for an open question: students type the answer). */
 export function options(q) { return q.kind === 'mc' ? KINDS.mc.slice(0, q.n) : KINDS[q.kind]; }
+/**
+ * Whether an answer equals the correct answer. Labels compare exactly; open answers ignore case and spacing,
+ * and two numbers compare as numbers ('5.0' equals '5').
+ */
+export function isRight(q, answer) {
+  if (!q.correct || !answer) return false;
+  if (q.kind !== 'open') return answer === q.correct;
+  const a = String(answer).trim(), c = q.correct;
+  const na = Number(a.replace(/,/g, '')), nc = Number(c.replace(/,/g, ''));
+  if (a !== '' && c !== '' && Number.isFinite(na) && Number.isFinite(nc)) return na === nc;
+  return a.toLowerCase().replace(/\s+/g, ' ') === c.toLowerCase().replace(/\s+/g, ' ');
+}
 export function isQuestionOpen(q, ms) { return Date.parse(q.closes) > ms; }
 /** The question students can answer now, or null (at most one is open). */
 export function openQuestion(s, ms) { return s.questions.find(q => isQuestionOpen(q, ms)) || null; }
@@ -108,7 +120,8 @@ export function question(s, id) { return s.questions.find(q => q.id === String(i
 function questionView(q, answer, ms) {
   const open = isQuestionOpen(q, ms);
   return { id: q.id, kind: q.kind, text: q.text, options: options(q), closes: q.closes, open: open,
-           answered: answer ? answer.answer : '', correct: open ? '' : q.correct };
+           answered: answer ? answer.answer : '', correct: open ? '' : q.correct,
+           right: !open && !!answer && isRight(q, answer.answer) };
 }
 
 /**
@@ -302,11 +315,16 @@ export function checkCode(s, code, nowMs) {
   }
 }
 
-/** Checks a student's answer; returns the label to store. */
+/** Checks a student's answer; returns the label (or, for an open question, the trimmed text) to store. */
 export function checkAnswer(s, id, answer, ms) {
   const q = question(s, id);
   if (!q) throw new Error('That question no longer exists.');
   if (!isQuestionOpen(q, ms)) throw new Error('The question is closed.');
+  if (q.kind === 'open') {
+    const t = String(answer || '').replace(/\r\n?/g, '\n').trim();
+    if (!t) throw new Error('Type an answer.');
+    return t.slice(0, 500);
+  }
   const label = options(q).find(o => o.toLowerCase() === String(answer || '').trim().toLowerCase());
   if (!label) throw new Error('Choose one of the answers.');
   return label;
@@ -450,13 +468,13 @@ export const ADMIN = {
   },
 
   /**
-   * Opens a question for `minutes` minutes (closing any open one). kind: tf, yn, or mc with n choices (2 to 5);
-   * text and correct are optional. Returns the new question.
+   * Opens a question for `minutes` minutes (closing any open one). kind: tf, yn, mc with n choices (2 to 5),
+   * or open (students type the answer); text and correct are optional. Returns the new question.
    */
   askQuestion(s, kind, n, text_, correct, minutes, nowMs) {
-    if (!KINDS[kind]) throw new Error('The question type must be True/False, Yes/No, or multiple choice.');
+    if (!KINDS[kind]) throw new Error('The question type must be True/False, Yes/No, multiple choice, or open answer.');
     n = kind === 'mc' ? Number(n) : KINDS[kind].length;
-    if (!(n >= 2 && n <= 5)) throw new Error('A multiple-choice question has 2 to 5 choices.');
+    if (kind !== 'open' && !(n >= 2 && n <= 5)) throw new Error('A multiple-choice question has 2 to 5 choices.');
     const q = { id: String(nowMs) + '-' + String(s.questions.length + 1), kind: kind, n: n, text: text(text_).slice(0, 500),
                 correct: '', opened: new Date(nowMs).toISOString(), closes: '' };
     q.correct = checkCorrect(q, correct);
@@ -502,10 +520,11 @@ function mustQuestion(s, id) {
   return q;
 }
 
-/** '' or one of the question's labels (case-insensitive). */
+/** '' or one of the question's labels (case-insensitive); for an open question, any text up to 200 characters. */
 function checkCorrect(q, correct) {
   const c = text(correct);
   if (!c) return '';
+  if (q.kind === 'open') return c.slice(0, 200);
   const label = options(q).find(o => o.toLowerCase() === c.toLowerCase());
   if (!label) throw new Error('The correct answer must be one of ' + options(q).join(', ') + '.');
   return label;

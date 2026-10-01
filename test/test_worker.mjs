@@ -128,7 +128,7 @@ ok(/does not match any class/.test((await adm('get')).error) && (await adm('log'
 // attendance tool
 const AK = 'a' + Date.now();
 const att = (action, args = [], key = AK) => post('/att/admin', { token: PROF, class: key, action: action, args: args });
-const attStu = (i, action) => post('/att', { token: token(m(i)), class: AK, action: action });
+const attStu = (i, action, args = []) => post('/att', { token: token(m(i)), class: AK, action: action, args: args });
 ok(/not an instructor/.test((await post('/att/admin', { token: token(m(1)), class: AK, action: 'whoami' })).error), 'attendance admin needs an instructor');
 r = await att('createClass', [AK, 'Attendance test'], '');
 ok(r.ok && r.data.key === AK && (await (await fetch(API + '/att/config')).json()).classes.some(c => c.key === AK), 'attendance class created and listed');
@@ -164,6 +164,37 @@ r = await att('addStudent', ['Al', 'Ash', 'asha1']);
 ok(r.ok && r.data.state.roster.length === 2 && r.data.state.roster[0].email === 'asha1@montclair.edu', 'student added by login ID');
 r = await att('removeStudent', ['asha1@mail.montclair.edu']);
 ok(r.ok && r.data.state.roster.length === 1, 'student removed');
+// in-class questions
+await att('importRoster', ['first,last,email\nF1,L1,' + m(1) + '\nF2,L2,' + m(2)]);
+r = await attStu(1, 'state');
+ok(r.ok && r.state.question === null, 'no question in the lobby');
+r = await att('askQuestion', ['mc', 4, 'Which curve?', 'C', 2]);
+const qid = r.ok && r.data.question && r.data.question.id;
+ok(qid && r.data.state.questions.length === 1 && r.data.question.correct === 'C', 'question asked and reported open');
+r = await attStu(1, 'state');
+ok(r.ok && r.state.question && r.state.question.open && r.state.question.options.join() === 'A,B,C,D' && r.state.question.correct === '' && r.state.refreshIn === 3000,
+  'student sees the open question without the correct answer');
+r = await attStu(1, 'answer', [qid, 'b']);
+ok(r.ok && r.state.question.answered === 'B', 'student answered B');
+r = await attStu(1, 'answer', [qid, 'C']);
+ok(r.ok && r.state.question.answered === 'C', 'student changed the answer to C');
+ok(/Choose one/.test((await attStu(1, 'answer', [qid, 'E'])).error), 'answer outside the options refused');
+ok(/not on the class roster/.test((await attStu(9, 'answer', [qid, 'A'])).error), 'answer from outside the roster refused');
+r = await attStu(2, 'answer', [qid, 'A']);
+r = await att('get');
+ok(r.data.answers.length === 2 && r.data.answers.find(a => a.email === m(1)).answer === 'C' && r.data.answers.find(a => a.email === m(2)).answer === 'A', 'instructor sees both answers');
+r = await att('closeQuestion', [qid]);
+ok(r.ok && r.data.question === null, 'question closed');
+ok(/closed/.test((await attStu(2, 'answer', [qid, 'B'])).error), 'answer after closing refused');
+r = await attStu(1, 'state');
+ok(r.ok && r.state.question && !r.state.question.open && r.state.question.correct === 'C' && r.state.question.answered === 'C', 'student sees the result after closing');
+r = await att('extendQuestion', [qid, 1]);
+ok(r.ok && r.data.question && r.data.question.id === qid, 'question reopened');
+r = await att('askQuestion', ['tf', 0, '', '', 1]);
+ok(r.ok && r.data.state.questions.length === 2 && r.data.question.kind === 'tf' && Date.parse(r.data.state.questions[0].closes) <= Date.now(), 'second question closes the first');
+ok(/one of True, False/.test((await att('askQuestion', ['tf', 0, '', 'A', 1])).error), 'bad correct answer refused');
+r = await att('deleteQuestion', [qid]);
+ok(r.ok && r.data.state.questions.length === 1 && r.data.answers.length === 0, 'first question and its answers deleted');
 ok(/Type the class key/.test((await att('deleteClass', ['wrong'])).error), 'attendance delete needs the key typed');
 r = await att('deleteClass', [AK]);
 ok(r.ok && !r.data.classes.some(c => c.key === AK) && /does not match/.test((await att('get')).error), 'attendance class deleted');

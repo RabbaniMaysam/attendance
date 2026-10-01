@@ -79,7 +79,7 @@
   var TOKEN_KEY = 'signup_token';  // shared with the sign-up instructor page: one sign-in serves both
   var TZ = 'America/New_York';
   var DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  var TABS = ['Attendance', 'Settings', 'Roster'];
+  var TABS = ['Attendance', 'Questions', 'Settings', 'Roster'];
   var token = '', me = '', classes = [], cur = '', D = null, tab = 'Attendance';
   var flash = null, busy = false, timer = null;
   try { token = sessionStorage.getItem(TOKEN_KEY) || ''; cur = sessionStorage.getItem('att_admin_class') || ''; } catch (e) {}
@@ -145,13 +145,20 @@
 
   function loadClass(quiet) {
     if (!cur) { render(); return; }
-    call('get').then(function (d) { D = d; if (!busy) render(); }).catch(function (e) { if (!quiet) fail(e); });
+    call('get').then(function (d) {
+      D = d;
+      // A quiet refresh leaves a form the instructor is typing in alone.
+      var a = document.activeElement, typing = a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.type !== 'checkbox';
+      if (!busy && !(quiet && typing)) render();
+    }).catch(function (e) { if (!quiet) fail(e); });
   }
 
-  // While the Attendance tab is shown, the grid refreshes every 10 seconds so marks appear as students press the button.
+  // While the Attendance tab is shown, the grid refreshes every 10 seconds so marks appear as students press the button;
+  // the Questions tab refreshes every 4 seconds so answers appear as they come in.
   function poll() {
     clearTimeout(timer);
-    timer = setTimeout(function () { if (tab === 'Attendance' && cur && !document.hidden) loadClass(true); poll(); }, 10000);
+    var ms = tab === 'Questions' ? 4000 : 10000;
+    timer = setTimeout(function () { if ((tab === 'Attendance' || tab === 'Questions') && cur && !document.hidden) loadClass(true); poll(); }, ms);
   }
 
   function start() {
@@ -284,9 +291,11 @@
       var status = el('p', { class: 'qrstatus' });
       var tick = function () {
         if (!D) return;
-        status.textContent = D.open
+        var q = D.state.questions.filter(isOpenQ)[0];
+        status.textContent = (D.open
           ? 'Open until ' + clock(D.open.close) + ' · ' + D.marks.filter(function (m) { return m.date === D.today; }).length + ' of ' + D.state.roster.length + ' marked'
-          : 'Attendance is closed' + (D.next ? ' · next: ' + shortDate(D.next.date) + ', ' + clock(D.next.open) : '');
+          : 'Attendance is closed' + (D.next ? ' · next: ' + shortDate(D.next.date) + ', ' + clock(D.next.open) : ''))
+          + (q ? ' · question open: ' + answersOf(q.id).length + ' of ' + D.state.roster.length + ' answered' : '');
       };
       tick();
       var iv = setInterval(tick, 2000);
@@ -350,12 +359,12 @@
     TABS.forEach(function (t) {
       tabs.appendChild(el('button', { class: 'tab' + (t === tab ? ' on' : ''), text: t, on: { click: function () {
         flash = null;
-        leaveSettings().then(function (go) { if (!go) return; tab = t; render(); });
+        leaveSettings().then(function (go) { if (!go) return; tab = t; render(); poll(); });
       } } }));
     });
     app.appendChild(tabs);
     var card = el('div', { class: 'card' });
-    ({ Attendance: attendance, Settings: settings, Roster: roster })[tab](card);
+    ({ Attendance: attendance, Questions: questions, Settings: settings, Roster: roster })[tab](card);
     app.appendChild(card);
     window.scrollTo(0, keepScroll);
   }
@@ -478,6 +487,130 @@
         busy = true;
         call('deleteClass', [conf.value]).then(function (d) { busy = false; classes = d.classes; settingsDraft = null; setClass(classes.length ? classes[0].key : ''); flash = { ok: 'Class deleted.' }; loadClass(false); }).catch(fail);
       });
+    })));
+  }
+
+  // ---- Questions
+  var KIND_NAMES = { tf: 'True / False', yn: 'Yes / No', mc: 'Multiple choice' };
+  var KIND_OPTIONS = { tf: ['True', 'False'], yn: ['Yes', 'No'], mc: ['A', 'B', 'C', 'D', 'E'] };
+  function optionsOf(q) { return q.kind === 'mc' ? KIND_OPTIONS.mc.slice(0, q.n) : KIND_OPTIONS[q.kind]; }
+  function isOpenQ(q) { return Date.parse(q.closes) > Date.now(); }
+  function answersOf(qid) { return D.answers.filter(function (a) { return a.qid === qid; }); }
+  function qLabel(q, i) { return 'Q' + (i + 1) + (q.text ? ': ' + (q.text.length > 60 ? q.text.slice(0, 57) + '...' : q.text) : ' (' + KIND_NAMES[q.kind] + ')'); }
+  // The ask form survives redraws; qSel is the question whose answers are listed.
+  var askDraft = { kind: 'mc', n: 4, text: '', correct: '', minutes: 2 }, qSel = '';
+
+  function questions(card) {
+    var S = D.state, roster = S.roster, byMail = {};
+    roster.forEach(function (r) { byMail[r.email] = r; });
+    var open = S.questions.filter(isOpenQ)[0] || null;
+
+    // ask panel
+    card.appendChild(el('h2', { text: 'Ask a question' }));
+    var kind = el('select', {}, el('option', { value: 'tf', text: 'True / False' }), el('option', { value: 'yn', text: 'Yes / No' }), el('option', { value: 'mc', text: 'Multiple choice' }));
+    kind.value = askDraft.kind;
+    var n = el('select', {}); [2, 3, 4, 5].forEach(function (k) { n.appendChild(el('option', { value: k, text: k + ' choices (A to ' + 'ABCDE'[k - 1] + ')' })); });
+    n.value = String(askDraft.n);
+    var correct = el('select', {});
+    var fillCorrect = function () {
+      correct.innerHTML = '';
+      correct.appendChild(el('option', { value: '', text: 'no correct answer' }));
+      optionsOf({ kind: kind.value, n: Number(n.value) }).forEach(function (o) { correct.appendChild(el('option', { value: o, text: o })); });
+      correct.value = askDraft.correct;
+      if (correct.value !== askDraft.correct) { correct.value = ''; askDraft.correct = ''; }
+      n.style.display = kind.value === 'mc' ? '' : 'none';
+    };
+    fillCorrect();
+    var qtext = el('textarea', { value: askDraft.text, placeholder: 'optional: the question text, if it is not on the board or the slide', rows: 2 });
+    var mins = el('input', { type: 'number', min: 1, max: 600, value: askDraft.minutes, style: 'width:70px' });
+    var edited = function () {
+      askDraft = { kind: kind.value, n: Number(n.value), text: qtext.value, correct: correct.value, minutes: Number(mins.value) || 2 };
+      fillCorrect();
+    };
+    [kind, n, correct, mins].forEach(function (x) { x.addEventListener('change', edited); });
+    qtext.addEventListener('input', edited); mins.addEventListener('input', edited);
+    card.appendChild(el('div', { class: 'row' }, kind, n, el('label', {}, 'Correct answer: ', correct), el('label', {}, 'open for ', mins, ' minutes')));
+    card.appendChild(qtext);
+    card.appendChild(el('div', { class: 'row', style: 'margin-top:8px' },
+      button('Ask', '', function () {
+        edited();
+        var sent = askDraft.text;
+        askDraft.text = ''; askDraft.correct = '';  // the next question starts with empty text and no correct answer
+        qSel = '';
+        run('askQuestion', [askDraft.kind, askDraft.n, sent, correct.value, askDraft.minutes], 'The question is open.');
+      }),
+      el('span', { class: 'muted', text: (open ? 'Asking a new question closes the open one. ' : '') + 'Students answer on their page, which refreshes every few seconds during class. They can change their answer until the question closes. Set the correct answer now or later; students see it once the question closes.' })));
+    if (!S.questions.length) { card.appendChild(el('p', { class: 'muted', style: 'margin-top:14px', text: 'No question has been asked yet.' })); return; }
+
+    // the selected question (default: the open one, else the latest) with live results
+    var sel = S.questions.filter(function (q) { return q.id === qSel; })[0] || open || S.questions[S.questions.length - 1];
+    var idx = S.questions.indexOf(sel), opts = optionsOf(sel), ans = answersOf(sel.id), isOpen = isOpenQ(sel);
+    var left = Math.max(0, Math.round((Date.parse(sel.closes) - Date.now()) / 1000));
+    card.appendChild(el('h2', { text: qLabel(sel, idx), style: 'margin-top:18px' }));
+    card.appendChild(el('div', { class: 'banner ' + (isOpen ? 'ok' : 'note'), style: 'margin:0 0 10px',
+      text: (isOpen ? 'OPEN, closes in ' + Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0') : 'Closed') +
+            ' · asked ' + isoClock(sel.opened) + ' · ' + ans.length + ' of ' + roster.length + ' answered' +
+            (sel.correct ? ' · correct: ' + sel.correct + ' (' + ans.filter(function (a) { return a.answer === sel.correct; }).length + ' right)' : '') }));
+    var bars = el('table', { style: 'max-width:520px' });
+    opts.forEach(function (o) {
+      var k = ans.filter(function (a) { return a.answer === o; }).length, pct = ans.length ? Math.round(100 * k / ans.length) : 0;
+      bars.appendChild(el('tr', {}, el('td', { style: 'width:60px; font-weight:700' + (o === sel.correct ? '; color:var(--ok)' : ''), text: o + (o === sel.correct ? ' ✓' : '') }),
+        el('td', { style: 'width:100%' }, el('div', { style: 'height:18px; border-radius:4px; background:' + (o === sel.correct ? '#b9dfc4' : '#c9d9ec') + '; width:' + Math.max(pct, 1) + '%' })),
+        el('td', { style: 'text-align:right; white-space:nowrap', text: k + ' (' + pct + '%)' })));
+    });
+    card.appendChild(bars);
+    var setC = el('select', {}, el('option', { value: '', text: 'no correct answer' }));
+    opts.forEach(function (o) { setC.appendChild(el('option', { value: o, text: o })); });
+    setC.value = sel.correct;
+    var more = el('input', { type: 'number', min: 1, max: 600, value: 1, style: 'width:60px' });
+    card.appendChild(el('div', { class: 'row', style: 'margin-top:8px' },
+      isOpen ? button('Close now', '', function () { run('closeQuestion', [sel.id], 'The question is closed.'); }) : null,
+      button(isOpen ? 'Extend by' : 'Reopen for', 'plain', function () { run('extendQuestion', [sel.id, Number(more.value)], isOpen ? 'Extended.' : 'The question is open again.'); }),
+      el('label', {}, more, ' min'),
+      el('span', { class: 'muted', text: '·' }),
+      el('label', {}, 'Correct answer: ', setC), button('Set', 'plain', function () { run('setCorrect', [sel.id, setC.value], 'Saved.'); }),
+      el('span', { class: 'muted', text: '·' }),
+      button('Delete', 'danger', function () {
+        ask('Delete ' + qLabel(sel, idx) + '?', ['The question and its ' + ans.length + ' answers are deleted.'], 'Delete', true)
+          .then(function (yes) { if (yes) { qSel = ''; run('deleteQuestion', [sel.id], 'Question deleted.'); } });
+      })));
+    var at = el('table', {}, el('tr', {}, el('th', { text: 'Student' }), el('th', { text: 'Answer' }), el('th', { text: 'Time' })));
+    var byMailA = {}; ans.forEach(function (a) { byMailA[a.email] = a; });
+    roster.forEach(function (r) {
+      var a = byMailA[r.email];
+      at.appendChild(el('tr', {}, el('td', { text: fullName(r) }),
+        el('td', { style: a && sel.correct ? 'font-weight:600; color:' + (a.answer === sel.correct ? 'var(--ok)' : 'var(--warn)') : '', text: a ? a.answer : '' }),
+        el('td', { class: 'muted', text: a ? isoClock(a.time) : '' })));
+    });
+    ans.filter(function (a) { return !byMail[a.email]; }).forEach(function (a) {  // answers of students since removed from the roster
+      at.appendChild(el('tr', {}, el('td', { class: 'muted', text: a.email }), el('td', { text: a.answer }), el('td', { class: 'muted', text: isoClock(a.time) })));
+    });
+    card.appendChild(el('div', { class: 'scroll', style: 'margin-top:10px; max-width:640px' }, at));
+
+    // history
+    card.appendChild(el('h2', { text: 'All questions (' + S.questions.length + ')', style: 'margin-top:18px' }));
+    var ht = el('table', {}, el('tr', {}, el('th', { text: '#' }), el('th', { text: 'Asked' }), el('th', { text: 'Type' }), el('th', { text: 'Text' }), el('th', { text: 'Correct' }), el('th', { text: 'Answered' }), el('th', { text: 'Right' }), el('th', {})));
+    S.questions.slice().reverse().forEach(function (q) {
+      var i = S.questions.indexOf(q), a = answersOf(q.id);
+      ht.appendChild(el('tr', { style: q === sel ? 'background:#eef4fb' : '' },
+        el('td', { text: 'Q' + (i + 1) }), el('td', { text: isoClock(q.opened) + (isOpenQ(q) ? ' (open)' : '') }),
+        el('td', { text: KIND_NAMES[q.kind] + (q.kind === 'mc' ? ' (' + q.n + ')' : '') }),
+        el('td', { style: 'white-space:normal; max-width:360px', text: q.text }), el('td', { text: q.correct }),
+        el('td', { text: a.length + ' / ' + roster.length }),
+        el('td', { text: q.correct ? String(a.filter(function (x) { return x.answer === q.correct; }).length) : '' }),
+        el('td', {}, q === sel ? null : el('button', { class: 'link', text: 'Show', on: { click: function () { qSel = q.id; render(); } } }))));
+    });
+    card.appendChild(el('div', { class: 'scroll' }, ht));
+    card.appendChild(el('div', { class: 'row', style: 'margin-top:10px' }, button('Download answers CSV', 'plain', function () {
+      var head = ['Last name', 'First name', 'Email'].concat(S.questions.map(function (q, i) { return 'Q' + (i + 1) + ' ' + isoClock(q.opened); }), ['Answered', 'Right']);
+      var rows = [head].concat(roster.map(function (r) {
+        var cells = S.questions.map(function (q) { var a = answersOf(q.id).filter(function (x) { return x.email === r.email; })[0]; return a ? a.answer : ''; });
+        return [r.last, r.first, r.email].concat(cells, [cells.filter(Boolean).length,
+          S.questions.filter(function (q, i) { return q.correct && cells[i] === q.correct; }).length]);
+      }));
+      rows.push(['Correct answer', '', ''].concat(S.questions.map(function (q) { return q.correct; })));
+      rows.push(['Text', '', ''].concat(S.questions.map(function (q) { return q.text; })));
+      download('answers_' + cur + '_' + D.today + '.csv', rows);
     })));
   }
 

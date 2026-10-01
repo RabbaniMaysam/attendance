@@ -24,8 +24,21 @@
     .big:disabled { opacity: .6; cursor: default; }
     .done { padding: 26px 16px; border-radius: 12px; background: #e8f5ec; color: var(--ok); border: 1px solid #b9dfc4;
             font-size: 22px; font-weight: 700; text-align: center; }
-    .closed { padding: 22px 16px; border-radius: 12px; background: #f0f2f5; color: var(--muted); text-align: center; font-size: 18px; }
-    .closed b { display: block; color: var(--ink); margin-top: 6px; }
+    .standby { padding: 22px 16px; border-radius: 12px; background: #f0f2f5; color: var(--muted); text-align: center; font-size: 18px; }
+    .standby b { display: block; color: var(--ink); margin-top: 6px; font-weight: 600; }
+    .pulse { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); margin-right: 8px;
+             animation: pulse 1.6s ease-in-out infinite; vertical-align: middle; }
+    @keyframes pulse { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+    .qcard { border-color: var(--accent); }
+    .qtext { font-size: 20px; font-weight: 600; margin: 0 0 12px; white-space: pre-wrap; }
+    .choices { display: grid; gap: 10px; }
+    .choice { padding: 20px 16px; font-size: 24px; font-weight: 700; border: 2px solid var(--line); border-radius: 12px;
+              background: #fff; color: var(--ink); cursor: pointer; }
+    .choice.picked { border-color: var(--accent); background: #e7f0fb; color: var(--accent); }
+    .choice.right { border-color: var(--ok); background: #e8f5ec; color: var(--ok); }
+    .choice.wrong { border-color: var(--warn); background: #fdecea; color: var(--warn); }
+    .choice:disabled { cursor: default; }
+    .qnote { margin-top: 10px; text-align: center; }
     button.link { border: 0; background: none; color: var(--accent); padding: 0; text-decoration: underline; font: inherit; cursor: pointer; }
     #signin { margin-top: 16px; }
   </style>
@@ -63,8 +76,8 @@
     try { token ? sessionStorage.setItem(TOKEN_KEY, token) : sessionStorage.removeItem(TOKEN_KEY); } catch (e) {}
   }
 
-  function api(action) {
-    return fetch(API + '/att', { method: 'POST', body: JSON.stringify({ token: token, class: classKey, action: action }) })
+  function api(action, args) {
+    return fetch(API + '/att', { method: 'POST', body: JSON.stringify({ token: token, class: classKey, action: action, args: args || [] }) })
       .then(function (r) { return r.json(); })
       .then(function (out) {
         if (out.ok) return out.state;
@@ -89,6 +102,12 @@
   function mark() {
     busy = true; render();
     api('mark').then(function (s) { busy = false; S = s; flash = ''; render(); schedule(); })
+      .catch(function (e) { busy = false; if (e.message !== 'SIGNIN') { flash = e.message; load(); } });
+  }
+
+  function answer(id, label) {
+    busy = true; render();
+    api('answer', [id, label]).then(function (s) { busy = false; S = s; flash = ''; render(); schedule(); })
       .catch(function (e) { busy = false; if (e.message !== 'SIGNIN') { flash = e.message; load(); } });
   }
 
@@ -180,18 +199,49 @@
     }
     app.appendChild(el('p', { class: 'muted' }, S.name + ' (' + S.email + '). ', signOutLink));
     if (flash) app.appendChild(el('div', { class: 'banner err', text: flash }));
-    var card = el('div', { class: 'card' });
-    if (S.marked) {
-      card.appendChild(el('div', { class: 'done', text: '✓ Present, ' + longDate(S.date) + ', ' + isoClock(S.marked) }));
-    } else if (S.open) {
+    var q = S.question;
+    // Attendance card: the button while the window is open, today's mark once made.
+    if (S.open && !S.marked) {
+      var card = el('div', { class: 'card' });
       card.appendChild(el('button', { class: 'big', disabled: busy, text: busy ? 'Recording...' : 'I am here', on: { click: mark } }));
-      card.appendChild(el('p', { class: 'muted', style: 'margin-top:10px; text-align:center', text: 'Attendance closes at ' + clock(S.open.close) + '.' }));
-    } else {
-      card.appendChild(el('div', { class: 'closed' }, 'Attendance is closed.',
-        el('b', { text: S.next ? 'Next: ' + longDate(S.next.date) + ', ' + clock(S.next.open) + ' to ' + clock(S.next.close) : 'No upcoming class is scheduled.' })));
+      card.appendChild(el('p', { class: 'muted qnote', text: 'Attendance closes at ' + clock(S.open.close) + '.' }));
+      app.appendChild(card);
+    } else if (S.marked) {
+      app.appendChild(el('div', { class: 'card' },
+        el('div', { class: 'done', text: '✓ Present, ' + longDate(S.date) + ', ' + isoClock(S.marked) })));
     }
-    app.appendChild(card);
-    app.appendChild(el('p', { class: 'muted', style: 'margin-top:12px', text: 'This page updates itself when attendance opens or closes. Times are New York time.' }));
+    // Question card: big answer buttons while open, the result for a few minutes after it closes.
+    if (q) {
+      var qc = el('div', { class: 'card qcard' });
+      qc.appendChild(el('p', { class: 'muted', style: 'margin:0 0 6px', text: q.open ? 'Question (closes at ' + isoClock(q.closes) + ')' : 'Question closed' }));
+      if (q.text) qc.appendChild(el('p', { class: 'qtext', text: q.text }));
+      var grid = el('div', { class: 'choices', style: q.options.length <= 2 ? 'grid-template-columns:1fr 1fr' : '' });
+      q.options.forEach(function (o) {
+        var cls = 'choice';
+        if (!q.open && q.correct) cls += o === q.correct ? ' right' : (o === q.answered ? ' wrong' : '');
+        else if (o === q.answered) cls += ' picked';
+        grid.appendChild(el('button', { class: cls, disabled: busy || !q.open, text: o,
+          on: { click: function () { if (q.open && o !== q.answered) answer(q.id, o); } } }));
+      });
+      qc.appendChild(grid);
+      var note;
+      if (q.open) note = q.answered ? 'Your answer: ' + q.answered + '. You can change it until the question closes.' : 'Choose one answer.';
+      else if (!q.answered) note = 'You did not answer.';
+      else if (q.correct) note = q.answered === q.correct ? 'Correct.' : 'Your answer: ' + q.answered + '. Correct answer: ' + q.correct + '.';
+      else note = 'Your answer: ' + q.answered + '.';
+      qc.appendChild(el('p', { class: 'muted qnote', text: note }));
+      app.appendChild(qc);
+    }
+    // Standby when nothing is going on.
+    if (!(S.open && !S.marked) && !(q && q.open)) {
+      var sb = el('div', { class: 'card' });
+      sb.appendChild(el('div', { class: 'standby' }, el('span', { class: 'pulse' }), 'Waiting for your instructor.',
+        el('b', { text: S.open ? 'Attendance is open until ' + clock(S.open.close) + '.' :
+                        S.next ? 'Next attendance: ' + longDate(S.next.date) + ', ' + clock(S.next.open) + ' to ' + clock(S.next.close) + '.' :
+                        'No upcoming class is scheduled.' })));
+      app.appendChild(sb);
+    }
+    app.appendChild(el('p', { class: 'muted', style: 'margin-top:12px', text: 'Keep this page open during class: it updates itself when attendance opens or a question is asked. Times are New York time.' }));
   }
 
   boot();

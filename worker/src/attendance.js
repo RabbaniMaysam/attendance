@@ -9,6 +9,8 @@
  *   schedule   {days: [0-6, 0 = Sunday], open: 'HH:MM', close: 'HH:MM', start: 'YYYY-MM-DD' or '', end: 'YYYY-MM-DD' or ''}
  *   skip       ['YYYY-MM-DD', ...]   scheduled days with no class (holidays)
  *   extra      [{date, open, close}] one-off windows (a moved class, or "open now")
+ *   questions  [{id, kind: 'tf' | 'yn' | 'mc', n, text, correct, opened, closes}]  in-class questions, oldest first;
+ *              times are ISO instants; a question is open while now < closes. Answers are rows of att_answers.
  * All clock times are New York local time. Marks are stored separately (att_marks), keyed by
  * date and email, whichever window (weekly or one-off) they were made in.
  */
@@ -41,7 +43,23 @@ export const DEFAULT_SKIP = ['2026-10-06', '2026-10-20', '2026-10-22', '2026-11-
 
 export function newAttClass(title, nowMs) {
   return { title: title, createdAt: nyParts(nowMs).date, roster: [],
-           schedule: Object.assign({}, DEFAULT_SCHEDULE), skip: DEFAULT_SKIP.slice(), extra: [] };
+           schedule: Object.assign({}, DEFAULT_SCHEDULE), skip: DEFAULT_SKIP.slice(), extra: [], questions: [] };
+}
+
+// ---------------------------------------------------------------- in-class questions
+
+const KINDS = { tf: ['True', 'False'], yn: ['Yes', 'No'], mc: ['A', 'B', 'C', 'D', 'E'] };
+/** The answer labels of a question. */
+export function options(q) { return q.kind === 'mc' ? KINDS.mc.slice(0, q.n) : KINDS[q.kind]; }
+export function isQuestionOpen(q, ms) { return Date.parse(q.closes) > ms; }
+/** The question students can answer now, or null (at most one is open). */
+export function openQuestion(s, ms) { return s.questions.find(q => isQuestionOpen(q, ms)) || null; }
+export function question(s, id) { return s.questions.find(q => q.id === String(id)) || null; }
+/** Marks a question for the student page: answered label and, once closed, the correct label. */
+function questionView(q, answer, ms) {
+  const open = isQuestionOpen(q, ms);
+  return { id: q.id, kind: q.kind, text: q.text, options: options(q), closes: q.closes, open: open,
+           answered: answer ? answer.answer : '', correct: open ? '' : q.correct };
 }
 
 /** The attendance windows on one New York date, earliest first. */
@@ -77,11 +95,18 @@ export function nextWindow(s, ms) {
   return null;
 }
 
-/** Milliseconds until the open/closed status next changes (capped at 6 hours). */
+/**
+ * Milliseconds until the student page should reload. While a question is open: 3 s. During class
+ * (from the day's first window until 2 hours after it opens): 8 s, so a new question appears quickly.
+ * Otherwise the moment the attendance window opens or closes, capped at 6 hours.
+ */
 export function refreshIn(s, ms) {
+  if (openQuestion(s, ms)) return 3000;
   const now = nyParts(ms);
   const secs = ms % 60000;
   const open = windowAt(s, ms);
+  const first = windowsOn(s, now.date, now.weekday)[0];
+  if (first && now.minutes >= toMin(first.open) && now.minutes < toMin(first.open) + 120) return 8000;
   let target;
   if (open) target = (toMin(open.close) - now.minutes) * 60000 - secs;
   else {
@@ -117,19 +142,35 @@ export const fullName = r => (r.first + ' ' + r.last).trim();
 
 // ---------------------------------------------------------------- student view
 
-/** Everything the student page displays. mark: the student's own mark for today, or null. */
-export function studentView(s, email, mark, ms) {
+/**
+ * Everything the student page displays. mark: the student's own mark for today, or null;
+ * answerOf(id): the student's own answer row for a question, or null.
+ */
+export function studentView(s, email, mark, ms, answerOf) {
   const me = student(s, email);
   if (!me) return { authorized: false, email: email, title: s.title };
   const open = windowAt(s, ms);
+  // The open question, or the one that closed in the last 3 minutes (so the result stays on screen briefly).
+  const q = openQuestion(s, ms) || s.questions.filter(x => ms - Date.parse(x.closes) < 180000).slice(-1)[0] || null;
   return {
     authorized: true, email: email, name: fullName(me), title: s.title,
     date: nyParts(ms).date,
     open: open,                                   // {date, open, close} or null
     marked: mark ? mark.time : '',                // ISO time of today's mark, or ''
     next: open ? null : nextWindow(s, ms),
+    question: q ? questionView(q, answerOf ? answerOf(q.id) : null, ms) : null,
     refreshIn: refreshIn(s, ms)
   };
+}
+
+/** Checks a student's answer; returns the label to store. */
+export function checkAnswer(s, id, answer, ms) {
+  const q = question(s, id);
+  if (!q) throw new Error('That question no longer exists.');
+  if (!isQuestionOpen(q, ms)) throw new Error('The question is closed.');
+  const label = options(q).find(o => o.toLowerCase() === String(answer || '').trim().toLowerCase());
+  if (!label) throw new Error('Choose one of the answers.');
+  return label;
 }
 
 // ---------------------------------------------------------------- instructor actions (change the state in place)
@@ -188,8 +229,69 @@ export const ADMIN = {
     const mail = canonEmail(email);
     if (!student(s, mail)) throw new Error(mail + ' is not on the roster.');
     s.roster = s.roster.filter(r => r.email !== mail);
+  },
+
+  /**
+   * Opens a question for `minutes` minutes (closing any open one). kind: tf, yn, or mc with n choices (2 to 5);
+   * text and correct are optional. Returns the new question.
+   */
+  askQuestion(s, kind, n, text_, correct, minutes, nowMs) {
+    if (!KINDS[kind]) throw new Error('The question type must be True/False, Yes/No, or multiple choice.');
+    n = kind === 'mc' ? Number(n) : KINDS[kind].length;
+    if (!(n >= 2 && n <= 5)) throw new Error('A multiple-choice question has 2 to 5 choices.');
+    const q = { id: String(nowMs) + '-' + String(s.questions.length + 1), kind: kind, n: n, text: text(text_).slice(0, 500),
+                correct: '', opened: new Date(nowMs).toISOString(), closes: '' };
+    q.correct = checkCorrect(q, correct);
+    const mins = Number(minutes);
+    if (!(mins >= 1 && mins <= 600)) throw new Error('Minutes must be 1 to 600.');
+    q.closes = new Date(nowMs + mins * 60000).toISOString();
+    s.questions.forEach(x => { if (isQuestionOpen(x, nowMs)) x.closes = new Date(nowMs).toISOString(); });
+    s.questions.push(q);
+    return q;
+  },
+
+  closeQuestion(s, id, nowMs) {
+    const q = mustQuestion(s, id);
+    if (isQuestionOpen(q, nowMs)) q.closes = new Date(nowMs).toISOString();
+  },
+
+  /** Adds minutes to an open question, or reopens a closed one for that many minutes (closing any other open one). */
+  extendQuestion(s, id, minutes, nowMs) {
+    const q = mustQuestion(s, id);
+    const mins = Number(minutes);
+    if (!(mins >= 1 && mins <= 600)) throw new Error('Minutes must be 1 to 600.');
+    const from = isQuestionOpen(q, nowMs) ? Date.parse(q.closes) : nowMs;
+    s.questions.forEach(x => { if (x !== q && isQuestionOpen(x, nowMs)) x.closes = new Date(nowMs).toISOString(); });
+    q.closes = new Date(Math.min(from + mins * 60000, nowMs + 600 * 60000)).toISOString();
+  },
+
+  /** Sets or clears the correct answer (also after the question closed). */
+  setCorrect(s, id, correct) {
+    const q = mustQuestion(s, id);
+    q.correct = checkCorrect(q, correct);
+  },
+
+  /** Removes a question. The Worker deletes its answers. */
+  deleteQuestion(s, id) {
+    mustQuestion(s, id);
+    s.questions = s.questions.filter(q => q.id !== String(id));
   }
 };
+
+function mustQuestion(s, id) {
+  const q = question(s, id);
+  if (!q) throw new Error('That question no longer exists.');
+  return q;
+}
+
+/** '' or one of the question's labels (case-insensitive). */
+function checkCorrect(q, correct) {
+  const c = text(correct);
+  if (!c) return '';
+  const label = options(q).find(o => o.toLowerCase() === c.toLowerCase());
+  if (!label) throw new Error('The correct answer must be one of ' + options(q).join(', ') + '.');
+  return label;
+}
 
 function sortRoster(s) {
   s.roster.sort((a, b) => (a.last + ' ' + a.first).toLowerCase() < (b.last + ' ' + b.first).toLowerCase() ? -1 : 1);
@@ -205,7 +307,7 @@ export function openNowWindow(nowMs, minutes) {
 
 /** Fills in fields added later. */
 export function upgradeAtt(s) {
-  s.roster = s.roster || []; s.skip = s.skip || []; s.extra = s.extra || [];
+  s.roster = s.roster || []; s.skip = s.skip || []; s.extra = s.extra || []; s.questions = s.questions || [];
   s.schedule = Object.assign({}, DEFAULT_SCHEDULE, s.schedule || {});
   delete s.sessions;
   return s;

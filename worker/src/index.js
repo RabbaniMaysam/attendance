@@ -58,7 +58,7 @@ export default {
           const data = path === '/admin' ? await adminCall(env, real, action, key, args) : await attAdminCall(env, real, action, key, args);
           return json({ ok: true, data: data });
         }
-        if (path === '/att') return json({ ok: true, state: await attStudentCall(env, real, action, key) });
+        if (path === '/att') return json({ ok: true, state: await attStudentCall(env, real, action, key, args) });
         return json({ ok: true, state: await studentCall(env, real, admin, req, args) });
       }
       return json({ ok: false, error: 'Not found.' });
@@ -278,9 +278,10 @@ async function adminCall(env, real, action, key, args) {
 // ---------------------------------------------------------------- attendance tool
 //
 //   GET  /att/config          -> {clientId, classes}
-//   POST /att        {token, class, action: 'state' | 'mark'}   -> {ok, state}
+//   POST /att        {token, class, action: 'state' | 'mark' | 'answer', args: [qid, answer]}   -> {ok, state}
 //   POST /att/admin  {token, class, action, args}               -> {ok, data}
-// Settings and roster are one JSON row per class (att_classes); marks are rows of att_marks.
+// Settings, roster, and questions are one JSON row per class (att_classes); marks are rows of
+// att_marks and answers rows of att_answers.
 
 async function attClassList(env) {
   const out = await env.DB.prepare("SELECT key, json_extract(state, '$.title') AS title FROM att_classes ORDER BY key").all();
@@ -297,7 +298,7 @@ function writeAtt(env, key, s) {
   return env.DB.prepare('UPDATE att_classes SET state = ? WHERE key = ?').bind(JSON.stringify(s), key).run();
 }
 
-async function attStudentCall(env, real, action, key) {
+async function attStudentCall(env, real, action, key, args) {
   const s = await readAtt(env, key);
   const now = Date.now();
   const date = att.nyParts(now).date;
@@ -307,9 +308,16 @@ async function attStudentCall(env, real, action, key) {
     if (!open) throw new Error('Attendance is not open right now.');
     await env.DB.prepare('INSERT OR IGNORE INTO att_marks (class, date, email, time, by) VALUES (?, ?, ?, ?, ?)')
       .bind(key, date, real, new Date(now).toISOString(), 'student').run();
+  } else if (action === 'answer') {
+    if (!att.student(s, real)) throw new Error('This account is not on the class roster.');
+    const label = att.checkAnswer(s, args[0], args[1], now);
+    await env.DB.prepare('INSERT OR REPLACE INTO att_answers (class, qid, email, answer, time) VALUES (?, ?, ?, ?, ?)')
+      .bind(key, String(args[0]), real, label, new Date(now).toISOString()).run();
   } else if (action !== 'state') throw new Error('Unknown action.');
   const mark = await env.DB.prepare('SELECT time FROM att_marks WHERE class = ? AND date = ? AND email = ?').bind(key, date, real).first();
-  return att.studentView(s, real, mark, now);
+  const answers = s.questions.length
+    ? (await env.DB.prepare('SELECT qid, answer FROM att_answers WHERE class = ? AND email = ?').bind(key, real).all()).results : [];
+  return att.studentView(s, real, mark, now, id => answers.find(a => a.qid === id) || null);
 }
 
 async function attAdminCall(env, real, action, key, args) {
@@ -332,7 +340,8 @@ async function attAdminCall(env, real, action, key, args) {
     await readAtt(env, key);
     await env.DB.batch([
       env.DB.prepare('DELETE FROM att_classes WHERE key = ?').bind(key),
-      env.DB.prepare('DELETE FROM att_marks WHERE class = ?').bind(key)
+      env.DB.prepare('DELETE FROM att_marks WHERE class = ?').bind(key),
+      env.DB.prepare('DELETE FROM att_answers WHERE class = ?').bind(key)
     ]);
     return { classes: await attClassList(env) };
   }
@@ -353,6 +362,21 @@ async function attAdminCall(env, real, action, key, args) {
     const w = att.openNowWindow(now, args[0]);
     att.ADMIN.addExtra(s, w.date, w.open, w.close);
     await writeAtt(env, key, s);
+  } else if (action === 'askQuestion') {
+    att.ADMIN.askQuestion(s, args[0], args[1], args[2], args[3], args[4], now);
+    await writeAtt(env, key, s);
+  } else if (action === 'closeQuestion') {
+    att.ADMIN.closeQuestion(s, args[0], now);
+    await writeAtt(env, key, s);
+  } else if (action === 'extendQuestion') {
+    att.ADMIN.extendQuestion(s, args[0], args[1], now);
+    await writeAtt(env, key, s);
+  } else if (action === 'deleteQuestion') {
+    att.ADMIN.deleteQuestion(s, args[0]);
+    await env.DB.batch([
+      env.DB.prepare('UPDATE att_classes SET state = ? WHERE key = ?').bind(JSON.stringify(s), key),
+      env.DB.prepare('DELETE FROM att_answers WHERE class = ? AND qid = ?').bind(key, String(args[0]))
+    ]);
   } else if (Object.prototype.hasOwnProperty.call(att.ADMIN, action)) {
     att.ADMIN[action](s, ...args);
     await writeAtt(env, key, s);
@@ -360,6 +384,9 @@ async function attAdminCall(env, real, action, key, args) {
 
   const marks = (await env.DB.prepare('SELECT date, email, time, by FROM att_marks WHERE class = ? ORDER BY date, email').bind(key).all()).results;
   const dates = marks.map(m => m.date).filter((d, i, a) => a.indexOf(d) === i);
-  return { state: s, marks: marks, sessions: att.sessionDates(s, dates, now), today: att.nyParts(now).date,
-           open: att.windowAt(s, now), next: att.nextWindow(s, now) };
+  const answers = s.questions.length
+    ? (await env.DB.prepare('SELECT qid, email, answer, time FROM att_answers WHERE class = ?').bind(key).all()).results : [];
+  return { state: s, marks: marks, answers: answers, sessions: att.sessionDates(s, dates, now), today: att.nyParts(now).date,
+           open: att.windowAt(s, now), next: att.nextWindow(s, now), now: new Date(now).toISOString(),
+           question: att.openQuestion(s, now) };
 }

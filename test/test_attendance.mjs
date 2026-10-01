@@ -45,10 +45,11 @@ nx = att.nextWindow(s, edt('2026-10-08', '09:00'));
 ok(nx && nx.date === '2026-10-13', 'next window after Thursday is next Tuesday');
 
 let r = att.refreshIn(s, edt('2026-10-06', '07:55') + 20000);
-ok(r > 5 * 60000 && r < 6 * 60000 + 2000, 'refresh at the close time while open: ' + r);
+ok(r === 8000, 'refresh every 8 s during class (window open): ' + r);
+ok(att.refreshIn(s, edt('2026-10-06', '09:49')) === 8000 && att.refreshIn(s, edt('2026-10-06', '09:50')) === 6 * 3600000, 'class lasts 2 hours from the opening; then the 6-hour cap');
 r = att.refreshIn(s, edt('2026-10-06', '07:40'));
 ok(r > 9 * 60000 && r < 11 * 60000, 'refresh at the open time while closed: ' + r);
-ok(att.refreshIn(s, edt('2026-10-06', '09:00')) === 6 * 3600000, 'refresh capped at 6 hours when the next window is days away');
+ok(att.refreshIn(s, edt('2026-10-06', '11:00')) === 6 * 3600000, 'refresh capped at 6 hours when the next window is days away');
 
 // settings: skip a holiday, semester bounds, validation
 att.ADMIN.saveSettings(s, { title: 'ECON 101', days: [2, 4], open: '07:50', close: '08:01', start: '2026-09-01', end: '2026-12-15', skip: '2026-11-26, 2026-10-08' });
@@ -96,6 +97,46 @@ throws(() => att.ADMIN.addStudent(s, 'X', 'Y', 'not an email'), /not valid/, 'ba
 att.ADMIN.removeStudent(s, 'AardvarkA1@mail.montclair.edu');
 ok(s.roster.length === 2 && !att.student(s, 'aardvarka1@montclair.edu'), 'student removed by either domain');
 throws(() => att.ADMIN.removeStudent(s, 'nobody@x.edu'), /not on the roster/, 'removing an unknown student refused');
+
+// in-class questions (the student on the roster is khanj6@montclair.edu; a Tuesday during class)
+const t0 = edt('2026-10-06', '08:10');
+ok(att.openQuestion(s, t0) === null && att.refreshIn(s, t0) === 8000, 'no question open; 8 s refresh during class');
+r = att.refreshIn(s, edt('2026-10-06', '07:49'));
+ok(att.refreshIn(s, edt('2026-10-06', '14:00')) > 8000 && r > 59000 && r < 62000, 'slow refresh outside class; one minute before the window: ' + r);
+throws(() => att.ADMIN.askQuestion(s, 'essay', 0, '', '', 2, t0), /question type/, 'unknown kind refused');
+throws(() => att.ADMIN.askQuestion(s, 'mc', 6, '', '', 2, t0), /2 to 5/, 'six choices refused');
+throws(() => att.ADMIN.askQuestion(s, 'tf', 0, '', 'Yes', 2, t0), /one of True, False/, 'correct answer not among the options refused');
+throws(() => att.ADMIN.askQuestion(s, 'yn', 0, '', '', 0, t0), /1 to 600/, 'zero minutes refused');
+const q1 = att.ADMIN.askQuestion(s, 'mc', 3, ' Which curve shifts? ', 'b', 2, t0);
+ok(s.questions.length === 1 && q1.text === 'Which curve shifts?' && q1.correct === 'B' && att.options(q1).join() === 'A,B,C'
+  && q1.closes === new Date(t0 + 120000).toISOString(), 'multiple choice with 3 options, correct label normalized, closes in 2 minutes');
+ok(att.openQuestion(s, t0 + 1000) === q1 && att.refreshIn(s, t0 + 1000) === 3000 && att.openQuestion(s, t0 + 120000) === null, 'open until it closes; 3 s refresh while open');
+ok(att.checkAnswer(s, q1.id, ' c ', t0 + 5000) === 'C', 'answer label normalized');
+throws(() => att.checkAnswer(s, q1.id, 'D', t0 + 5000), /Choose one/, 'answer outside the options refused');
+throws(() => att.checkAnswer(s, q1.id, 'A', t0 + 120000), /closed/, 'answer after closing refused');
+throws(() => att.checkAnswer(s, 'nope', 'A', t0), /no longer exists/, 'unknown question refused');
+v = att.studentView(s, 'khanj6@montclair.edu', null, t0 + 5000, id => (id === q1.id ? { answer: 'C' } : null));
+ok(v.question && v.question.open && v.question.answered === 'C' && v.question.correct === '' && v.question.options.length === 3 && v.refreshIn === 3000,
+  'student view: open question with own answer, correct answer hidden');
+v = att.studentView(s, 'khanj6@montclair.edu', null, t0 + 130000, id => (id === q1.id ? { answer: 'C' } : null));
+ok(v.question && !v.question.open && v.question.correct === 'B' && v.question.answered === 'C', 'student view: just closed, correct answer shown');
+ok(att.studentView(s, 'khanj6@montclair.edu', null, t0 + 400000, () => null).question === null, 'student view: closed question gone after 3 minutes');
+att.ADMIN.extendQuestion(s, q1.id, 1, t0 + 60000);
+ok(q1.closes === new Date(t0 + 180000).toISOString(), 'extend adds a minute to the close time');
+att.ADMIN.closeQuestion(s, q1.id, t0 + 90000);
+ok(q1.closes === new Date(t0 + 90000).toISOString() && att.openQuestion(s, t0 + 90000) === null, 'close now');
+att.ADMIN.extendQuestion(s, q1.id, 2, t0 + 300000);
+ok(att.openQuestion(s, t0 + 300000) === q1 && q1.closes === new Date(t0 + 420000).toISOString(), 'reopen a closed question for 2 minutes');
+const q2 = att.ADMIN.askQuestion(s, 'tf', 0, '', '', 5, t0 + 310000);
+ok(att.openQuestion(s, t0 + 310000) === q2 && !att.isQuestionOpen(q1, t0 + 310000) && q2.correct === '' && att.options(q2).join() === 'True,False',
+  'asking a new question closes the open one');
+att.ADMIN.setCorrect(s, q2.id, 'false');
+ok(q2.correct === 'False', 'correct answer set later');
+throws(() => att.ADMIN.setCorrect(s, q2.id, 'B'), /one of True, False/, 'bad correct answer refused');
+att.ADMIN.deleteQuestion(s, q1.id);
+ok(s.questions.length === 1 && att.question(s, q1.id) === null, 'question deleted');
+throws(() => att.ADMIN.deleteQuestion(s, q1.id), /no longer exists/, 'deleting twice refused');
+ok(att.upgradeAtt({ title: 'x' }).questions.length === 0, 'upgrade adds the questions list');
 
 console.log('passed', pass, 'failed', fail);
 process.exit(fail ? 1 : 0);

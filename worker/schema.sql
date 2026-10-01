@@ -47,3 +47,13 @@ CREATE TABLE IF NOT EXISTS att_marks (
   by    TEXT NOT NULL DEFAULT 'student',
   PRIMARY KEY (class, date, email)
 );
+
+-- One row per student per in-class question (qid = question id in the class state); the latest answer wins.
+CREATE TABLE IF NOT EXISTS att_answers (
+  class  TEXT NOT NULL,
+  qid    TEXT NOT NULL,
+  email  TEXT NOT NULL,
+  answer TEXT NOT NULL,
+  time   TEXT NOT NULL,
+  PRIMARY KEY (class, qid, email)
+);

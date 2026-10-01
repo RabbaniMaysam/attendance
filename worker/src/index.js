@@ -312,7 +312,7 @@ async function attStudentCall(env, real, action, key, args) {
       if (!att.student(s, real)) throw new Error('This account is not on the class roster.');
       const open = att.windowAt(s, now);
       if (!open) throw new Error('Attendance is not open right now.');
-      att.checkCode(s, open, args[0]);
+      att.checkCode(s, args[0], now);
       // The first press sets self; a later press (also after the instructor set the student absent) makes the round present again.
       const res = await env.DB.prepare('INSERT INTO att_marks (class, round, email, self, present) VALUES (?, ?, ?, ?, 1) '
         + 'ON CONFLICT (class, round, email) DO UPDATE SET self = COALESCE(self, excluded.self), present = 1 WHERE present = 0')
@@ -447,6 +447,14 @@ async function attAdminDo(env, real, who, action, key, args) {
     att.ADMIN.noteBackup(s, now);
     await writeAtt(env, key, s);
     logs.push(['note backup', String(args[0] || 'downloaded')]);
+  } else if (action === 'removeRound') {
+    // A whole round goes: its window and every mark made in it.
+    const scheduled = att.ADMIN.removeRound(s, args[0]);
+    const res = await env.DB.batch([
+      env.DB.prepare('DELETE FROM att_marks WHERE class = ? AND round = ?').bind(key, String(args[0])),
+      env.DB.prepare('UPDATE att_classes SET state = ? WHERE key = ?').bind(JSON.stringify(s), key)
+    ]);
+    logs.push(['remove round', 'round ' + args[0] + ', ' + res[0].meta.changes + ' marks deleted' + (scheduled ? ' (scheduled window removed; restorable under Settings)' : '')]);
   } else if (action === 'askQuestion') {
     const q = att.ADMIN.askQuestion(s, args[0], args[1], args[2], args[3], args[4], now);
     await writeAtt(env, key, s);
@@ -487,7 +495,7 @@ async function attAdminDo(env, real, who, action, key, args) {
     const added = s.roster.filter(r => before.indexOf(r) === -1).map(r => name(r.email)).join(', ');
     const detail = { addExtra: 'window ' + args[0] + ' ' + args[1] + ' to ' + args[2], removeExtra: 'window ' + args[0] + ' ' + (args[1] || ''),
                      addStudent: added, removeStudent: removed, setCorrect: args[0] + ': ' + (args[1] || 'none'),
-                     excludeDate: args[0] + ' (does not count)', includeDate: args[0] + ' (counts again)' };
+                     excludeDate: args[0] + ' (does not count)', includeDate: args[0] + ' (counts again)', restoreRound: 'round ' + args[0] };
     logs.push([action.replace(/([A-Z])/g, c => ' ' + c.toLowerCase()), action in detail ? detail[action] : args.join(', ')]);
   } else if (action !== 'get') throw new Error('Unknown action.');
 
@@ -502,8 +510,9 @@ async function attAdminDo(env, real, who, action, key, args) {
     ? (await env.DB.prepare('SELECT qid, email, answer, time FROM att_answers WHERE class = ?').bind(key).all()).results : [];
   const roundsList = att.rounds(s, ids, now);
   const open = att.windowAt(s, now);
-  const state = Object.assign({}, s); delete state.secret;  // the page never needs the secret
+  // The secret is sent apart from the state (never in a download): the page computes the 10-second session codes from it and `now`.
+  const state = Object.assign({}, s); delete state.secret;
   return { state: state, marks: marks, answers: answers, rounds: roundsList, today: att.nyParts(now).date,
-           open: open, code: open ? att.sessionCode(s, open.id) : null, next: att.nextWindow(s, now), now: new Date(now).toISOString(),
+           open: open, secret: s.secret, next: att.nextWindow(s, now), now: new Date(now).toISOString(),
            question: att.openQuestion(s, now), report: att.report(s, roundsList, marks, now) };
 }

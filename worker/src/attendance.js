@@ -13,12 +13,14 @@
  *   extended   {round id: 'HH:MM'}  windows extended while open ("extend"): the new closing time
  *   exclude    ['YYYY-MM-DD', ...]  dates that do not count: hidden in the grid, left out of the sessions,
  *              the percentages, and the points (their marks are kept; a date can be included again)
+ *   removed    [round id, ...]      scheduled rounds removed with "remove round" (their marks are deleted by the
+ *              Worker); the day has no scheduled window until the round is restored
  *   questions  [{id, kind: 'tf' | 'yn' | 'mc', n, text, correct, opened, closes}]  in-class questions, oldest first;
  *              times are ISO instants; a question is open while now < closes. Answers are rows of att_answers.
  *   points     {mode: 'per' | 'total', value}  attendance points: per session, or a total divided equally
  *              among all sessions of the semester (see sessionDates and report)
- *   code       true when students must type the round's session code to mark themselves present
- *   secret     random string; the session code of a round is derived from it (see sessionCode)
+ *   code       true when students must type the session code to mark themselves present
+ *   secret     random string; the session codes are derived from it (see sessionCode)
  *   backupAt   ISO instant of the last full download of the class's data noted by the instructor, or ''
  * All clock times are New York local time. Every window is one attendance round, identified by
  * 'YYYY-MM-DD HH:MM' (its date and opening time); marks are rows of att_marks keyed by round and
@@ -53,7 +55,7 @@ export const DEFAULT_SKIP = ['2026-10-06', '2026-10-20', '2026-10-22', '2026-11-
 
 export function newAttClass(title, nowMs) {
   return { title: title, createdAt: nyParts(nowMs).date, roster: [],
-           schedule: Object.assign({}, DEFAULT_SCHEDULE), skip: DEFAULT_SKIP.slice(), extra: [], closed: {}, extended: {}, exclude: [],
+           schedule: Object.assign({}, DEFAULT_SCHEDULE), skip: DEFAULT_SKIP.slice(), extra: [], closed: {}, extended: {}, exclude: [], removed: [],
            questions: [], points: { mode: 'total', value: 0 }, code: true, secret: randomSecret(), backupAt: '' };
 }
 
@@ -67,12 +69,17 @@ export function randomSecret() {
 }
 
 /**
- * The 4-digit session code of a round, shown with the QR code and typed by students: a hash of the
- * class's secret and the round id, so it is fixed for the round, differs between rounds, and cannot
- * be guessed from earlier codes. (cyrb53 hash.)
+ * The 4-digit session code shown with the QR code and typed by students. It changes every CODE_MS
+ * (10 s), like a two-step verification code: a hash of the class's secret and the 10-second slot,
+ * so it cannot be guessed from earlier codes and is hard to relay to someone outside the room.
+ * The instructor page computes it with a copy of this function (it receives the secret and the
+ * server clock); the Worker accepts the current slot and the previous one, so a code is valid for
+ * 10 to 20 seconds after it appears (typing takes a few seconds). (cyrb53 hash.)
  */
-export function sessionCode(s, id) {
-  const str = String(s.secret || '') + '|' + id;
+export const CODE_MS = 10000;
+export const codeSlot = ms => Math.floor(ms / CODE_MS);
+export function sessionCode(s, slot) {
+  const str = String(s.secret || '') + '|' + slot;
   let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
   for (let i = 0; i < str.length; i++) {
     const ch = str.charCodeAt(i);
@@ -108,13 +115,14 @@ function questionView(q, answer, ms) {
  * The attendance windows (rounds) on one New York date, earliest first: {id, date, open, close, extra}.
  * An extended window ends at the recorded later minute. A window closed early keeps its id and date
  * but ends at the recorded minute (a zero-length window when closed in its opening minute: listed
- * for the grid, never open).
+ * for the grid, never open). A removed scheduled round has no window.
  */
 export function windowsOn(s, date, weekday) {
   const out = s.extra.filter(x => x.date === date).map(x => ({ open: x.open, close: x.close, extra: true }));
   const sch = s.schedule;
   if (sch.days.indexOf(weekday) !== -1 && s.skip.indexOf(date) === -1 &&
-      (!sch.start || date >= sch.start) && (!sch.end || date <= sch.end)) {
+      (!sch.start || date >= sch.start) && (!sch.end || date <= sch.end) &&
+      (s.removed || []).indexOf(roundId(date, sch.open)) === -1) {
     out.push({ open: sch.open, close: sch.close, extra: false });
   }
   out.forEach(x => {
@@ -285,10 +293,13 @@ export function studentView(s, email, marks, ms, answerOf) {
   };
 }
 
-/** Checks the session code a student typed for the open round (when the class requires one). */
-export function checkCode(s, open, code) {
+/** Checks the session code a student typed (when the class requires one): the current 10-second code or the previous one. */
+export function checkCode(s, code, nowMs) {
   if (!s.code) return;
-  if (String(code ?? '').trim() !== sessionCode(s, open.id)) throw new Error('Wrong session code. Type the 4-digit code shown by your instructor.');
+  const typed = String(code ?? '').trim(), slot = codeSlot(nowMs);
+  if (typed !== sessionCode(s, slot) && typed !== sessionCode(s, slot - 1)) {
+    throw new Error('Wrong session code. The code changes every 10 seconds: type the one on the screen now.');
+  }
 }
 
 /** Checks a student's answer; returns the label to store. */
@@ -339,6 +350,29 @@ export const ADMIN = {
     date = text(date);
     if (counts(s, date)) throw new Error(date + ' is not excluded.');
     s.exclude = s.exclude.filter(d => d !== date);
+  },
+
+  /**
+   * Removes a round (a trial run, say): its one-off window, or, for a scheduled round, the day's scheduled
+   * window until the round is restored. The Worker deletes the round's marks. Returns true when a scheduled
+   * window was removed.
+   */
+  removeRound(s, id) {
+    id = text(id);
+    if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(id)) throw new Error('That is not a round.');
+    const date = id.slice(0, 10), open = id.slice(11);
+    if (s.extra.some(x => x.date === date && x.open === open)) { ADMIN.removeExtra(s, date, open); return false; }
+    delete s.closed[id]; delete s.extended[id];
+    const scheduled = windowsOn(s, date, new Date(date + 'T12:00:00Z').getUTCDay()).some(w => w.id === id);
+    if (scheduled) s.removed = s.removed.concat([id]).sort();
+    return scheduled;
+  },
+
+  /** Puts a removed scheduled round back (without its deleted marks). */
+  restoreRound(s, id) {
+    id = text(id);
+    if (s.removed.indexOf(id) === -1) throw new Error('That round was not removed.');
+    s.removed = s.removed.filter(r => r !== id);
   },
 
   /** "Extend": the open round (scheduled or one-off) closes `minutes` later than it would, at most at 23:59. */
@@ -484,7 +518,7 @@ function sortRoster(s) {
 /** Fills in fields added later. */
 export function upgradeAtt(s) {
   s.roster = s.roster || []; s.skip = s.skip || []; s.extra = s.extra || []; s.questions = s.questions || []; s.closed = s.closed || {};
-  s.extended = s.extended || {}; s.exclude = s.exclude || []; s.backupAt = s.backupAt || '';
+  s.extended = s.extended || {}; s.exclude = s.exclude || []; s.removed = s.removed || []; s.backupAt = s.backupAt || '';
   if (s.code === undefined) s.code = true;
   // The secret is created on the first read of an older class; the Worker writes the state back (see readAtt).
   s.schedule = Object.assign({}, DEFAULT_SCHEDULE, s.schedule || {});

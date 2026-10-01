@@ -1,6 +1,7 @@
 // Tests the attendance rules (windows in New York time, schedule edits, roster import).
 //   node test/test_attendance.mjs
 import * as att from '../worker/src/attendance.js';
+import { readFileSync } from 'node:fs';
 
 let pass = 0, fail = 0;
 const ok = (cond, label) => { cond ? pass++ : (fail++, console.log('FAIL:', label)); };
@@ -252,25 +253,64 @@ ok(att.windowAt(g, edt('2026-09-16', '23:58')).close === '23:59', 'an extension 
 att.ADMIN.removeExtra(g, '2026-09-16', '23:57');
 ok(!('2026-09-16 23:57' in g.extended), 'removing the window drops its extension');
 
-// ---- session codes: 4 digits, fixed per round, different between rounds and classes, off when the setting is off
-const c1 = att.sessionCode(g, '2026-09-15 07:50');
-ok(/^\d{4}$/.test(c1) && c1 === att.sessionCode(g, '2026-09-15 07:50'), 'a 4-digit code, the same on every call: ' + c1);
-const many = ['2026-09-01 07:50', '2026-09-03 07:50', '2026-09-10 07:50', '2026-09-22 07:50', '2026-09-29 07:50'].map(id => att.sessionCode(g, id));
-ok(many.filter((c, i) => many.indexOf(c) === i).length >= 4, 'codes differ between rounds: ' + many.join(' '));
+// ---- session codes: 4 digits, one per 10-second slot, different between slots and classes, off when the setting is off
+const slot = att.codeSlot(during);
+ok(att.CODE_MS === 10000 && slot === Math.floor(during / 10000) && att.codeSlot(during + 9999) === slot && att.codeSlot(during + 10000) === slot + 1, 'a slot is 10 seconds');
+const c1 = att.sessionCode(g, slot);
+ok(/^\d{4}$/.test(c1) && c1 === att.sessionCode(g, slot), 'a 4-digit code, the same on every call: ' + c1);
+const many = [0, 1, 2, 3, 4, 5].map(k => att.sessionCode(g, slot + k));
+ok(many.filter((c, i) => many.indexOf(c) === i).length >= 5, 'codes differ between slots: ' + many.join(' '));
 const g2 = att.newAttClass('Other', mid);
 ok(g2.secret.length === 32 && g2.secret !== g.secret, 'each class has its own secret');
+const same = [0, 1, 2, 3, 4, 5].filter(k => att.sessionCode(g2, slot + k) === att.sessionCode(g, slot + k)).length;
+ok(same <= 1, 'two classes have different codes in the same slots (' + same + ' of 6 equal by chance)');
 ok(att.studentView(g, 'a@x.edu', [], during).needCode === true, 'the student view says a code is needed');
-throws(() => att.checkCode(g, { id: '2026-09-15 07:50' }, '0000' === c1 ? '0001' : '0000'), /Wrong session code/, 'a wrong code is refused');
-throws(() => att.checkCode(g, { id: '2026-09-15 07:50' }, ''), /Wrong session code/, 'an empty code is refused');
-att.checkCode(g, { id: '2026-09-15 07:50' }, ' ' + c1 + ' ');
-ok(true, 'the right code passes (spaces ignored)');
+throws(() => att.checkCode(g, '0000' === c1 ? '0001' : '0000', during), /Wrong session code/, 'a wrong code is refused');
+throws(() => att.checkCode(g, '', during), /Wrong session code/, 'an empty code is refused');
+att.checkCode(g, ' ' + c1 + ' ', during);
+att.checkCode(g, c1, during + 9999);
+ok(true, 'the right code passes (spaces ignored) throughout its slot');
+att.checkCode(g, c1, during + 19999 - (during % 10000));
+ok(true, 'and during the next slot (typing takes a few seconds)');
+throws(() => att.checkCode(g, c1, during + 20000), /Wrong session code/, 'but not two slots later');
+throws(() => att.checkCode(g, att.sessionCode(g, slot + 1), during), /Wrong session code/, 'a code from the future is refused');
 att.ADMIN.saveSettings(g, { title: 'ECON 102', days: [2, 4], open: '07:50', close: '08:05', start: '2026-09-01', end: '2026-09-29', skip: '2026-09-08', code: false });
-att.checkCode(g, { id: '2026-09-15 07:50' }, '');
+att.checkCode(g, '', during);
 ok(g.code === false && att.studentView(g, 'a@x.edu', [], during).needCode === false, 'codes switched off: nothing is checked');
 att.ADMIN.saveSettings(g, { title: 'ECON 102', days: [2, 4], open: '07:50', close: '08:05', start: '2026-09-01', end: '2026-09-29', skip: '2026-09-08' });
 ok(g.code === false, 'saving without the code field keeps the setting');
 att.ADMIN.noteBackup(g, mid);
 ok(g.backupAt === new Date(mid).toISOString(), 'backup noted');
+
+// ---- the instructor page computes the codes with its own copy of the hash: it must match the Worker's
+const page = readFileSync(new URL('../docs/attendance_admin.html', import.meta.url), 'utf8');
+const src = /function sessionCode\(secret, slot\) \{[\s\S]*?\r?\n  \}\r?\n/.exec(page);
+ok(!!src, 'the page has sessionCode(secret, slot)');
+const pageCode = new Function(src[0] + ' return sessionCode;')();
+ok([0, 1, 2, 3].every(k => pageCode(g.secret, slot + k) === att.sessionCode(g, slot + k)) && pageCode('abc', 7) === att.sessionCode({ secret: 'abc' }, 7), 'the page\'s codes equal the Worker\'s');
+
+// ---- removing a round: a one-off window goes; a scheduled round is listed as removed until restored (marks: the Worker)
+att.ADMIN.openNow(g, 5, edt('2026-09-17', '12:00'));
+ok(att.rounds(g, [], edt('2026-09-17', '12:30')).some(x => x.id === '2026-09-17 12:00'), 'a trial round is listed');
+ok(att.ADMIN.removeRound(g, '2026-09-17 12:00') === false && g.extra.every(x => x.open !== '12:00') && g.removed.length === 0, 'removing it drops the one-off window; nothing is listed as removed');
+ok(att.rounds(g, [], edt('2026-09-17', '12:30')).map(x => x.id).join() === '2026-09-01 07:50,2026-09-03 07:50,2026-09-10 07:50,2026-09-15 07:50,2026-09-17 07:50', 'the round is gone from the list');
+ok(att.ADMIN.removeRound(g, '2026-09-17 07:50') === true && g.removed.join() === '2026-09-17 07:50', 'removing the scheduled round lists it as removed');
+ok(att.windowsOn(g, '2026-09-17', 4).length === 0 && att.windowAt(g, edt('2026-09-17', '08:00')) === null, 'the day has no scheduled window');
+ok(att.sessionDates(g, [], edt('2026-09-17', '12:30')).indexOf('2026-09-17') === -1 && !att.rounds(g, [], edt('2026-09-17', '12:30')).some(x => x.date === '2026-09-17'), 'the day is no session and has no round');
+ok(att.rounds(g, ['2026-09-17 07:50'], edt('2026-09-17', '12:30')).some(x => x.id === '2026-09-17 07:50'), 'a removed round with marks left behind is still listed (the Worker deletes them)');
+ok(att.windowsOn(g, '2026-09-24', 4).length === 1, 'the next week\'s scheduled round is untouched');
+throws(() => att.ADMIN.removeRound(g, 'Sep 17'), /not a round/, 'a bad id is refused');
+att.ADMIN.removeRound(g, '2026-09-18 07:50');
+ok(g.removed.length === 1, 'removing a round with no window changes nothing');
+throws(() => att.ADMIN.restoreRound(g, '2026-09-24 07:50'), /not removed/, 'restoring a round that was not removed is refused');
+att.ADMIN.restoreRound(g, '2026-09-17 07:50');
+ok(g.removed.length === 0 && att.windowsOn(g, '2026-09-17', 4).length === 1, 'restored: the window is back');
+att.ADMIN.removeRound(g, '2026-09-17 07:50');
+att.ADMIN.addExtra(g, '2026-09-17', '07:50', '08:05');
+ok(g.removed.length === 1 && att.windowsOn(g, '2026-09-17', 4).length === 1 && att.windowsOn(g, '2026-09-17', 4)[0].extra, 'a one-off window at the removed round\'s time stands alone');
+ok(att.ADMIN.removeRound(g, '2026-09-17 07:50') === false && g.removed.length === 1 && att.windowsOn(g, '2026-09-17', 4).length === 0, 'removing it again removes the one-off window; the scheduled round stays removed');
+att.ADMIN.restoreRound(g, '2026-09-17 07:50');
+ok(att.upgradeAtt({ title: 'x' }).removed.length === 0, 'upgrade adds the removed list');
 
 console.log('passed', pass, 'failed', fail);
 process.exit(fail ? 1 : 0);

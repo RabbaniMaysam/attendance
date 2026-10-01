@@ -109,7 +109,12 @@
     if (S.needCode && !/^\d{4}$/.test(codeDraft.trim())) { flash = 'Type the 4-digit session code shown by your instructor.'; render(); return; }
     busy = true; render();
     api('mark', [codeDraft.trim()]).then(function (s) { busy = false; S = s; flash = ''; codeDraft = ''; render(); schedule(); })
-      .catch(function (e) { busy = false; if (e.message !== 'SIGNIN') { flash = e.message; load(); } });
+      .catch(function (e) {
+        busy = false;
+        if (e.message === 'SIGNIN') return;
+        if (/^Wrong session code/.test(e.message)) codeDraft = '';  // the code on the screen has changed by now: type the new one
+        flash = e.message; load();
+      });
   }
 
   function answer(id, label) {
@@ -218,7 +223,7 @@
         code.value = codeDraft;
         code.addEventListener('input', function () { codeDraft = code.value.replace(/\D/g, '').slice(0, 4); code.value = codeDraft; });
         code.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') mark(); });
-        card.appendChild(el('p', { class: 'codelabel', text: 'Session code (shown with the QR code):' }));
+        card.appendChild(el('p', { class: 'codelabel', text: 'Session code (on the screen, next to the QR code; it changes every 10 seconds):' }));
         card.appendChild(code);
         if (hadFocus) setTimeout(function () { code.focus(); code.setSelectionRange(code.value.length, code.value.length); }, 0);
       }

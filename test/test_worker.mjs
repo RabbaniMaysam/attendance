@@ -10,6 +10,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import * as attMod from '../worker/src/attendance.js';
 
 const API = process.env.API || 'http://127.0.0.1:8791';
 // The Worker keeps the public key it fetched for an hour, so the test key is kept between runs.
@@ -140,22 +141,24 @@ await att('saveSettings', [{ title: 'Attendance test', days: [], open: '07:50', 
 r = await attStu(1, 'state');
 ok(r.ok && r.state.authorized && r.state.open === null && r.state.next === null, 'closed with nothing scheduled');
 ok(/not open/.test((await attStu(1, 'mark')).error), 'mark refused while closed');
-// Open now for 5 minutes, then the student marks with the session code; a second press changes nothing.
+// Open now for 5 minutes, then the student marks with the session code (the current 10-second code, computed from the
+// secret and the server clock as the instructor page does); a second press changes nothing.
 r = await att('openNow', [5]);
-ok(r.ok && r.data.open && r.data.state.extra.length === 1 && /^\d{4}$/.test(r.data.code) && r.data.state.secret === undefined, 'open now adds a window, reports open with a 4-digit code, and keeps the secret out');
-let code = r.data.code;
-ok(/Wrong session code/.test((await attStu(1, 'mark', [code === '0000' ? '0001' : '0000'])).error) && /Wrong session code/.test((await attStu(1, 'mark')).error), 'wrong or missing code refused');
+ok(r.ok && r.data.open && r.data.state.extra.length === 1 && /^[0-9a-f]{32}$/.test(r.data.secret) && r.data.state.secret === undefined && r.data.now,
+  'open now adds a window, reports open with the secret and the clock (the secret is not in the state)');
+const code = () => attMod.sessionCode({ secret: r.data.secret }, attMod.codeSlot(Date.now()));
+ok(/Wrong session code/.test((await attStu(1, 'mark', [attMod.sessionCode({ secret: r.data.secret }, attMod.codeSlot(Date.now()) + 2)])).error) && /Wrong session code/.test((await attStu(1, 'mark')).error), 'wrong or missing code refused');
 ok((await attStu(1, 'state')).state.needCode === true, 'the student page is told a code is needed');
-r = await attStu(1, 'mark', [code]);
-ok(r.ok && r.state.marked && r.state.open, 'student marked present with the code');
-const firstMark = r.state.marked;
-r = await attStu(1, 'mark', [code]);
-ok(r.ok && r.state.marked === firstMark, 'second press keeps the first time');
-// Extend the open round by 10 minutes; the code is unchanged.
+let rs = await attStu(1, 'mark', [code()]);
+ok(rs.ok && rs.state.marked && rs.state.open, 'student marked present with the code');
+const firstMark = rs.state.marked;
+rs = await attStu(1, 'mark', [code()]);
+ok(rs.ok && rs.state.marked === firstMark, 'second press keeps the first time');
+// Extend the open round by 10 minutes.
 r = await att('get');
 const closeBefore = r.data.open.close;
 r = await att('extendNow', [10]);
-ok(r.ok && r.data.open && r.data.open.close > closeBefore && r.data.state.extended[r.data.open.id] === r.data.open.close && r.data.code === code, 'extended by 10 minutes: closes later, same code');
+ok(r.ok && r.data.open && r.data.open.close > closeBefore && r.data.state.extended[r.data.open.id] === r.data.open.close, 'extended by 10 minutes: closes later');
 ok(/1 to 600/.test((await att('extendNow', [0])).error), 'extend by zero refused');
 r = await att('get');
 const round1 = r.data.open.id;
@@ -164,7 +167,7 @@ ok(r.data.marks.length === 1 && r.data.marks[0].email === m(1) && r.data.marks[0
 ok(r.data.open.closesAt && Date.parse(r.data.open.closesAt) - Date.now() > 3 * 60000, 'the open window reports its closing instant');
 ok(/Attendance is open/.test((await att('setMark', [round1, m(2), true])).error), 'cells cannot be changed while a round is open');
 r = await att('closeNow', []);
-ok(r.ok && r.data.open === null && r.data.code === null && r.data.state.closed[round1] && (await attStu(2, 'state')).state.open === null && /not open/.test((await attStu(2, 'mark', [code])).error), 'closed early');
+ok(r.ok && r.data.open === null && r.data.state.closed[round1] && (await attStu(2, 'state')).state.open === null && /not open/.test((await attStu(2, 'mark', [code()])).error), 'closed early');
 ok(/not open/.test((await att('closeNow', [])).error) && /not open/.test((await att('extendNow', [5])).error), 'close now and extend refused when closed');
 // Changes after the fact. Setting a student's own mark absent keeps the row, so the manual change (-1) is on record; setting it present again is change 0.
 r = await att('setMark', [round1, m(2), true]);
@@ -256,13 +259,32 @@ ok(r.ok && r.data.state.questions.length === 2 && r.data.question.kind === 'tf' 
 ok(/one of True, False/.test((await att('askQuestion', ['tf', 0, '', 'A', 1])).error), 'bad correct answer refused');
 r = await att('deleteQuestion', [qid]);
 ok(r.ok && r.data.state.questions.length === 1 && r.data.answers.length === 0, 'first question and its answers deleted');
+// Removing a round deletes its marks. A scheduled round is listed as removed (no window that day) until restored.
+r = await att('get');
+const nMarks = r.data.marks.length;
+ok(r.data.marks.some(x => x.round === '2026-01-05 10:00') && r.data.rounds.some(x => x.id === '2026-01-05 10:00'), 'the past round with a mark is listed');
+r = await att('removeRound', ['2026-01-05 10:00']);
+ok(r.ok && r.data.marks.length === nMarks - 1 && !r.data.marks.some(x => x.round === '2026-01-05 10:00') && !r.data.rounds.some(x => x.id === '2026-01-05 10:00') && r.data.state.removed.length === 0,
+  'round removed: its mark is deleted and the column is gone');
+ok(/not a round/.test((await att('removeRound', ['2026-01-05'])).error), 'a date alone is not a round');
+await att('saveSettings', [{ title: 'Attendance test', days: [0, 1, 2, 3, 4, 5, 6], open: '00:00', close: '00:01', skip: '', code: false }]);
+r = await att('get');
+const todayRound = r.data.today + ' 00:00';
+ok(r.data.rounds.some(x => x.id === todayRound), 'a scheduled round at midnight has opened today');
+r = await att('removeRound', [todayRound]);
+ok(r.ok && r.data.state.removed.join() === todayRound && !r.data.rounds.some(x => x.id === todayRound), 'the scheduled round is removed and listed as removed');
+r = await att('restoreRound', [todayRound]);
+ok(r.ok && r.data.state.removed.length === 0 && r.data.rounds.some(x => x.id === todayRound), 'restored');
+ok(/not removed/.test((await att('restoreRound', [todayRound])).error), 'restoring it again is refused');
+await att('saveSettings', [{ title: 'Attendance test', days: [], open: '07:50', close: '08:01', skip: '', code: false }]);
 // The log: student marks, answers, and refusals; every instructor change and refusal; filter by who.
 let lg = (await att('log', ['', 'all', 5000])).data.rows;
 const acts = lg.map(x => x.action);
 ok(acts.indexOf('create class') !== -1 && acts.indexOf('open now') !== -1 && acts.indexOf('close now') !== -1 && acts.indexOf('set absent') !== -1 && acts.indexOf('set present') !== -1
   && acts.indexOf('import roster') !== -1 && acts.indexOf('add student') !== -1 && acts.indexOf('remove student') !== -1 && acts.indexOf('save settings') !== -1
   && acts.indexOf('ask question') !== -1 && acts.indexOf('delete question') !== -1 && acts.indexOf('remove extra') !== -1
-  && acts.indexOf('extend') !== -1 && acts.indexOf('exclude date') !== -1 && acts.indexOf('include date') !== -1 && acts.indexOf('note backup') !== -1 && acts.indexOf('export') === -1,
+  && acts.indexOf('extend') !== -1 && acts.indexOf('exclude date') !== -1 && acts.indexOf('include date') !== -1 && acts.indexOf('note backup') !== -1 && acts.indexOf('export') === -1
+  && lg.some(x => x.action === 'remove round' && /1 marks deleted$/.test(x.detail)) && lg.some(x => x.action === 'remove round' && /scheduled window removed/.test(x.detail)) && acts.indexOf('restore round') !== -1,
   'instructor actions logged (reads are not): ' + acts.filter((a, i) => acts.indexOf(a) === i).join(', '));
 ok(acts.indexOf('present') !== -1 && acts.indexOf('answer') !== -1 && acts.indexOf('refused: mark') !== -1 && acts.indexOf('refused: setMark') !== -1, 'student marks, answers, and refusals logged');
 ok(lg.filter(x => x.action === 'present').length === 2 && lg.every(x => x.action !== 'state'), 'a mark is logged once per press that changes something; page loads are not logged');

@@ -36,9 +36,11 @@
     table.grid th.v { text-align: center; vertical-align: bottom; padding: 4px 0 3px; font-weight: 500; font-size: 12px; }
     table.grid th.v span { display: inline-block; writing-mode: vertical-rl; transform: rotate(180deg); line-height: 1.1; }
     table.grid th.v.open { color: var(--ok); font-weight: 700; }
-    table.grid th.v.click { cursor: pointer; }
-    table.grid th.v.click:hover { color: var(--accent); }
     table.grid th.v.out, table.grid td.out { color: #b0b6bd; }
+    /* the "Exclude dates" row: one dark-blue checkbox per round; checked = the date counts */
+    table.grid tr.excl td { padding: 2px 1px 4px; text-align: center; background: #eef4fb; border-top: 1px solid var(--line); }
+    table.grid tr.excl td.name { text-align: left; color: var(--accent); font-weight: 600; }
+    table.grid tr.excl input { accent-color: var(--accent); width: 16px; height: 16px; margin: 0; cursor: pointer; display: block; margin: 0 auto; }
     table.grid th.v.out span { text-decoration: line-through; }
     table.grid td.out button { opacity: .45; }
     table.grid td.total { text-align: center; padding: 2px 4px; }
@@ -89,6 +91,9 @@
     .qrstatus { font-size: 22px; margin: 0 0 6px; color: var(--ok); }
     .qrcode { font-size: 44px; font-weight: 700; margin: 6px 0; letter-spacing: 4px; }
     .qrcode small { font-size: 22px; font-weight: 500; letter-spacing: 0; color: var(--muted); margin-right: 12px; }
+    /* the bar beside the session code: full when a new code appears, empty when it changes (10 seconds) */
+    .codebar { display: inline-block; width: 140px; height: 14px; margin-left: 16px; vertical-align: middle; border-radius: 7px; background: #e3e7ec; overflow: hidden; }
+    .codebar div { height: 100%; background: var(--accent); border-radius: 7px; }
   </style>
 </head>
 <body>
@@ -134,6 +139,26 @@
     try { sessionStorage.setItem('att_admin_class', cur); } catch (e) {}
   }
 
+  // Every "get" response carries the server's clock; the session codes are computed on the server's time, not the PC's.
+  var clockOffset = 0;
+  function setD(d) { D = d; if (d && d.now) clockOffset = Date.parse(d.now) - Date.now(); }
+  function serverNow() { return Date.now() + clockOffset; }
+
+  // The session code: a copy of sessionCode in worker/src/attendance.js (cyrb53 hash of the class's secret and the 10-second slot).
+  var CODE_MS = 10000;
+  function sessionCode(secret, slot) {
+    var str = String(secret || '') + '|' + slot, h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+    for (var i = 0; i < str.length; i++) {
+      var ch = str.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    var n = 4294967296 * (2097151 & h2) + (h1 >>> 0);
+    return String(n % 10000).padStart(4, '0');
+  }
+
   function call(action, args, key) {
     return fetch(API + '/att/admin', { method: 'POST',
       body: JSON.stringify({ token: token, class: key === undefined ? cur : key, action: action, args: args || [] }) })
@@ -155,7 +180,7 @@
   function run(action, args, okText) {
     busy = true; flash = null;
     call(action, args).then(function (d) {
-      busy = false; D = d; flash = okText ? { ok: okText } : null;
+      busy = false; setD(d); flash = okText ? { ok: okText } : null;
       render();
       if (action === 'saveSettings') refreshClasses();
     }).catch(fail);
@@ -168,7 +193,7 @@
   function loadClass(quiet) {
     if (!cur) { render(); return; }
     call('get').then(function (d) {
-      D = d;
+      setD(d);
       // A quiet refresh leaves a form the instructor is typing in alone.
       var a = document.activeElement, typing = a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.type !== 'checkbox';
       if (!busy && !(quiet && typing)) render();
@@ -190,7 +215,7 @@
   function statusText() {
     var q = D.state.questions.filter(isOpenQ)[0];
     return (D.open
-      ? 'Attendance is OPEN (round of ' + clock(D.open.open) + '), ' + mmss(remaining()) + ' left (until ' + clock(D.open.close) + ')' + (D.state.code ? ' · session code ' + D.code : '') + ' · ' + D.marks.filter(function (m) { return m.round === D.open.id && m.present; }).length + ' of ' + D.state.roster.length + ' marked'
+      ? 'Attendance is OPEN (round of ' + clock(D.open.open) + '), ' + mmss(remaining()) + ' left (until ' + clock(D.open.close) + ') · ' + D.marks.filter(function (m) { return m.round === D.open.id && m.present; }).length + ' of ' + D.state.roster.length + ' marked'
       : 'Attendance is closed' + (D.next ? ' · next: ' + shortDate(D.next.date) + ', ' + clock(D.next.open) + ' to ' + clock(D.next.close) : ' · no upcoming class is scheduled'))
       + (q ? ' · question open: ' + answersOf(q.id).length + ' of ' + D.state.roster.length + ' answered' : '');
   }
@@ -324,7 +349,7 @@
       if (v !== 'save') return false;
       busy = true; flash = null;
       return call('saveSettings', [settingsDraft]).then(function (d) {
-        busy = false; D = d; settingsDraft = null; flash = { ok: 'Settings saved.' }; refreshClasses(); return true;
+        busy = false; setD(d); settingsDraft = null; flash = { ok: 'Settings saved.' }; refreshClasses(); return true;
       }).catch(function (e) { fail(e); return false; });
     });
   }
@@ -336,7 +361,7 @@
   function sendMarks(list) {
     busy = true; flash = null;
     return call('setMarks', [list]).then(function (d) {
-      busy = false; D = d; pending = {}; flash = { ok: list.length + ' change' + (list.length === 1 ? '' : 's') + ' saved.' }; render(); return true;
+      busy = false; setD(d); pending = {}; flash = { ok: list.length + ' change' + (list.length === 1 ? '' : 's') + ' saved.' }; render(); return true;
     }).catch(function (e) { fail(e); return false; });
   }
   /** The Save button: confirms, then saves every pending cell. */
@@ -375,24 +400,32 @@
     return pic;
   }
 
-  /** The session code line: "Session code 1224" while a round is open (and codes are required), else a short note. */
+  /**
+   * The session code line, shown wherever the QR code is: "Session code 1224" and a bar that empties over the
+   * code's 10 seconds and refills when the next code appears. Updates itself ten times a second until removed.
+   * Shown whether or not a round is open (the code is only checked while one is).
+   */
   function codeLine(cls) {
     var e = el('p', { class: cls });
+    if (!D || !D.state.code) return e;
+    var num = document.createTextNode(''), bar = el('div'), slot = -1;
+    e.appendChild(el('small', { text: 'Session code' })); e.appendChild(num); e.appendChild(el('span', { class: 'codebar', title: 'The code changes every 10 seconds.' }, bar));
     var tick = function () {
-      e.innerHTML = '';
-      if (!D || !D.state.code) return;
-      if (D.open) { e.appendChild(el('small', { text: 'Session code' })); e.appendChild(document.createTextNode(D.code)); }
-      else e.appendChild(el('small', { text: 'The session code appears here when attendance opens.' }));
+      if (!document.contains(e)) { clearInterval(iv); return; }
+      var ms = serverNow(), k = Math.floor(ms / CODE_MS);
+      if (k !== slot) { slot = k; num.textContent = sessionCode(D.secret, k); }
+      bar.style.width = (100 * (1 - (ms - k * CODE_MS) / CODE_MS)) + '%';
     };
-    tick(); e.tick = tick;
+    var iv = setInterval(tick, 100);
+    tick();
     return e;
   }
 
-  /** Full-screen QR code of the student link, for the classroom projector, with the live status (attendance and question). */
+  /** Full-screen QR code of the student link, for the classroom projector, with the session code and the live status (attendance and question). */
   function showQr() {
     withQr(function () {
       var status = el('p', { class: 'qrstatus' }), code = codeLine('qrcode');
-      var tick = function () { if (D) { status.textContent = statusText(); code.tick(); } };
+      var tick = function () { if (D) status.textContent = statusText(); };
       tick();
       var iv = setInterval(tick, 1000);
       var veil, onKey = function (ev) { if (ev.key === 'Escape') done(); };
@@ -415,7 +448,7 @@
       var a = el('a', { href: URL.createObjectURL(new Blob([JSON.stringify(d, null, 1)], { type: 'application/json' })), download: 'attendance_' + cur + '_' + D.today + '_full.json' });
       document.body.appendChild(a); a.click(); a.remove();
       return call('noteBackup', ['downloaded ' + d.marks.length + ' marks, ' + d.answers.length + ' answers, ' + d.log.length + ' log rows']);
-    }).then(function (d) { busy = false; D = d; flash = { ok: 'Downloaded. Keep the file somewhere safe.' }; render(); }).catch(fail);
+    }).then(function (d) { busy = false; setD(d); flash = { ok: 'Downloaded. Keep the file somewhere safe.' }; render(); }).catch(fail);
   }
   function backupBanner() {
     var last = D.state.backupAt ? 'last on ' + isoClock(D.state.backupAt) : 'never';
@@ -436,7 +469,7 @@
   function qrTab(card) {
     card.appendChild(liveStatus('banner ' + (D.open ? 'ok' : 'note')));
     card.appendChild(el('div', { class: 'row', style: 'margin-top:12px' }, button('Full screen', '', showQr),
-      el('span', { class: 'muted', text: 'The full-screen view shows the code, the link, the session code, and the live status for the classroom projector; it works during attendance and questions alike.' })));
+      el('span', { class: 'muted', text: 'The full-screen view shows the QR code, the link, the session code, and the live status for the classroom projector; it works during attendance and questions alike.' + (D.state.code ? ' The session code changes every 10 seconds (the bar shows the time left); students type the code on the screen, and may retry until attendance closes.' : '') })));
     var holder = el('div', { style: 'text-align:center; margin-top:8px' });
     card.appendChild(holder);
     withQr(function () {
@@ -506,17 +539,31 @@
 
   // ---- Attendance grid
   var gridView = '';  // 'today' (this day's rounds, the live view) or 'all'; chosen on first draw
-  var showExcluded = false;
+  var showExcluded = false, excludeMode = false;  // excludeMode: the "Exclude dates" checkbox row is shown
+  var removeSel = '';  // the round chosen in "Remove a round"
   function counted(x) { return D.state.exclude.indexOf(x.date) === -1; }
-  /** Excludes or includes a date after a confirmation. */
+  /** Excludes or includes a date after a confirmation; redraws either way (a cancelled change resets its checkbox). */
   function toggleDate(date) {
     var out = D.state.exclude.indexOf(date) !== -1, label = shortDate(date) + ' (' + date + ')';
+    var k = D.rounds.filter(function (x) { return x.date === date; }).length;
+    leaveMarks().then(function (go) {
+      if (!go) { render(); return; }
+      return (out
+        ? ask('Count ' + label + ' again?', ['Its ' + (k === 1 ? 'round counts' : k + ' rounds count') + ' again in the percentages and points, and the column is shown.'], 'Include', false)
+        : ask('Exclude ' + label + '?', ['Its ' + (k === 1 ? 'round no longer counts' : k + ' rounds no longer count') + ' in the percentages and points, and the column is hidden unless "Show excluded" or "Exclude dates" is on. The marks are kept, and the date can be included again at any time.'], 'Exclude', false))
+        .then(function (yes) { if (yes) run(out ? 'includeDate' : 'excludeDate', [date], out ? label + ' counts again.' : label + ' is excluded.'); else render(); });
+    });
+  }
+  /** Deletes a whole round (its marks and its window) after a confirmation. */
+  function removeRound(x) {
+    var n = D.marks.filter(function (m) { return m.round === x.id && m.present; }).length;
+    var scheduled = !D.state.extra.some(function (e) { return e.date === x.date && e.open === x.open; });
     leaveMarks().then(function (go) {
       if (!go) return;
-      return (out
-        ? ask('Count ' + label + ' again?', ['Its rounds count again in the percentages and points, and the column is shown.'], 'Include', false)
-        : ask('Exclude ' + label + '?', ['Its rounds no longer count in the percentages and points, and the column is hidden (the "Show excluded" switch shows it). The marks are kept, and the date can be included again at any time.'], 'Exclude', false))
-        .then(function (yes) { if (yes) run(out ? 'includeDate' : 'excludeDate', [date], out ? label + ' counts again.' : label + ' is excluded.'); });
+      ask('Remove the round of ' + roundLabel(x) + '?', ['Its ' + n + ' present mark' + (n === 1 ? '' : 's') + ' and every manual change in it are deleted for good, and its column disappears.'
+        + (scheduled ? ' This is the scheduled window of ' + shortDate(x.date) + ': the day has no scheduled window until you restore the round under Settings.' : ' Its one-off window is removed.')
+        + ' To keep the marks but leave the date out of the totals, exclude the date instead.'], 'Remove round', true)
+        .then(function (yes) { if (yes) { removeSel = ''; run('removeRound', [x.id], 'Round removed.'); } });
     });
   }
   function attendance(card) {
@@ -530,7 +577,7 @@
     var cnt = D.rounds.filter(counted), nOut = D.rounds.length - cnt.length;
     var todays = D.rounds.filter(function (x) { return x.date === D.today; });
     if (!gridView) gridView = todays.length ? 'today' : 'all';
-    var rounds = (gridView === 'today' ? todays : D.rounds).filter(function (x) { return showExcluded || counted(x); });
+    var rounds = (gridView === 'today' ? todays : D.rounds).filter(function (x) { return showExcluded || excludeMode || counted(x); });
     card.appendChild(el('div', { class: 'row', style: 'margin-top:12px' },
       D.open ? button('Close attendance now', '', function () {
         ask('Close attendance now?', ['Students can no longer mark themselves present today. The marks made so far are kept. "Open attendance now" reopens it.'], 'Close now', false)
@@ -570,12 +617,15 @@
     // view switch and the save bar
     var exCb = el('input', { type: 'checkbox' }); exCb.checked = showExcluded;
     exCb.addEventListener('change', function () { showExcluded = exCb.checked; render(); });
+    var modeCb = el('input', { type: 'checkbox', style: 'accent-color:var(--accent)' }); modeCb.checked = excludeMode;
+    modeCb.addEventListener('change', function () { excludeMode = modeCb.checked; render(); });
     var switcher = el('div', { class: 'row', style: 'margin-top:4px' },
       el('button', { class: 'view' + (gridView === 'today' ? ' on' : ''), text: 'Today (' + todays.length + (todays.length === 1 ? ' round)' : ' rounds)'), on: { click: function () { gridView = 'today'; render(); } } }),
       el('button', { class: 'view' + (gridView === 'all' ? ' on' : ''), text: 'All rounds (' + cnt.length + ')', on: { click: function () { gridView = 'all'; render(); } } }),
-      nOut ? el('label', {}, exCb, 'Show excluded (' + nOut + ')') : null,
+      el('label', { title: 'Shows a row of checkboxes under the dates: unchecking a date excludes it from the percentages and points.' }, modeCb, 'Exclude dates'),
+      nOut && !excludeMode ? el('label', {}, exCb, 'Show excluded (' + nOut + ')') : null,
       el('span', { class: 'muted', text: locked ? 'Attendance is open: the grid is live and read-only. Cells can be changed after it closes.'
-        : 'Click cells to change them, then save. Nothing changes until you save. Click a date to exclude it (or include it again).' }));
+        : 'Click cells to change them, then save. Nothing changes until you save.' }));
     card.appendChild(switcher);
     if (marksDirty()) {
       var k = pendingList().length;
@@ -589,24 +639,32 @@
       return;
     }
 
-    // the grid: one column per round; a label shows the time only on days with several rounds; every header is vertical
-    var perDate = {};
-    D.rounds.forEach(function (x) { perDate[x.date] = (perDate[x.date] || 0) + 1; });
+    // the grid: one column per round, labelled with its date (several rounds on one day have the same label; the
+    // tooltip has the time); every header is vertical
     var showPoints = S.points.value > 0;
     var vth = function (text, cls, title) { return el('th', { class: 'v' + (cls ? ' ' + cls : ''), title: title || null }, el('span', { text: text })); };
     var head = el('tr', {}, el('th', { text: 'Student', style: 'vertical-align:bottom' }));
     rounds.forEach(function (x) {
       var out = !counted(x);
-      var h = vth(monthDay(x.date) + (perDate[x.date] > 1 ? ' ' + clock(x.open) : ''), 'click' + (out ? ' out' : '') + (D.open && x.id === D.open.id ? ' open' : ''),
-        csvLabel(x) + (out ? ' (excluded). Click to include it again.' : '. Click to exclude this date.'));
-      h.addEventListener('click', function () { toggleDate(x.date); });
-      head.appendChild(h);
+      head.appendChild(vth(monthDay(x.date), (out ? 'out' : '') + (D.open && x.id === D.open.id ? ' open' : ''), csvLabel(x) + (out ? ' (excluded)' : '')));
     });
     head.appendChild(vth('Present', '', 'rounds present, of the ' + cnt.length + ' that count'));
     head.appendChild(vth('%'));
     if (showPoints) head.appendChild(vth('Points', '', 'attendance points earned so far'));
     head.appendChild(vth('Changed', '', 'cells changed by hand: up, down'));
     var t = el('table', { class: 'grid' }, head);
+    if (excludeMode) {
+      // one checkbox per round: checked = the date counts; every change asks first and is saved at once
+      var ex = el('tr', { class: 'excl' }, el('td', { class: 'name', text: 'Counts', title: 'Checked: the date counts. Unchecked: excluded from the percentages and points (marks kept).' }));
+      rounds.forEach(function (x) {
+        var cb = el('input', { type: 'checkbox', disabled: busy, title: csvLabel(x) + (counted(x) ? ': counts. Uncheck to exclude this date.' : ': excluded. Check to include it again.') });
+        cb.checked = counted(x);
+        cb.addEventListener('change', function () { toggleDate(x.date); });
+        ex.appendChild(el('td', {}, cb));
+      });
+      for (var j = 0; j < 3 + (showPoints ? 1 : 0); j++) ex.appendChild(el('td'));
+      t.appendChild(ex);
+    }
     S.roster.forEach(function (r) {
       var tr = el('tr', {}, el('td', { class: 'name' }, fullName(r), el('div', { class: 'muted', text: r.email })));
       var n = 0, up = 0, down = 0, st = R.students[r.email];
@@ -638,7 +696,21 @@
     card.appendChild(el('p', { class: 'muted', style: 'margin-top:10px' },
       el('span', { class: 'swatch on' }), ' marked by the student during the round; ', el('span', { class: 'swatch inst' }),
       ' marked present by you (change +1); ', el('span', { class: 'swatch rev' }),
-      ' marked by the student, set absent by you (change −1). A dashed outline is an unsaved change. A cell set back to what the student did has change 0; "Changed" counts the rounds changed by hand, up and down. "Present" and "%" count the rounds that have opened on dates that count; an excluded date (struck through, greyed) keeps its marks but counts nowhere. "Points" are the attendance points earned so far (Settings sets them; the Reports tab has the details). One column per round (each scheduled or "open now" window that has opened, from the first class day through now, plus any round with a mark); several rounds on one day are several columns, labelled with their time. The grid refreshes every 10 seconds.'));
+      ' marked by the student, set absent by you (change −1). A dashed outline is an unsaved change. A cell set back to what the student did has change 0; "Changed" counts the rounds changed by hand, up and down. "Present" and "%" count the rounds that have opened on dates that count; an excluded date (struck through, greyed) keeps its marks but counts nowhere ("Exclude dates" shows the checkbox row). "Points" are the attendance points earned so far (Settings sets them; the Reports tab has the details). One column per round (each scheduled or "open now" window that has opened, from the first class day through now, plus any round with a mark); several rounds on one day are several columns with the same date (the time is in the tooltip and the CSV). The grid refreshes every 10 seconds.'));
+    // remove a whole round (a trial run): its marks are deleted
+    var rsel = el('select', { on: { change: function () { removeSel = rsel.value; } } }, el('option', { value: '', text: 'choose a round' }));
+    D.rounds.slice().reverse().forEach(function (x) {
+      var n = S.roster.filter(function (r) { return has(x.id, r.email); }).length;
+      rsel.appendChild(el('option', { value: x.id, text: roundLabel(x) + ' (' + n + ' present)' }));
+    });
+    rsel.value = removeSel;  // survives the 10-second redraws
+    card.appendChild(el('div', { class: 'row', style: 'margin-top:8px' }, el('span', { class: 'muted', text: 'Remove a round:' }), rsel,
+      button('Remove round', 'danger', function () {
+        var x = D.rounds.filter(function (r) { return r.id === rsel.value; })[0];
+        if (!x) { flash = { err: 'Choose the round to remove.' }; render(); return; }
+        removeRound(x);
+      }),
+      el('span', { class: 'muted', text: 'Deletes the round\'s marks and its column, for a trial run of attendance, say. To keep the marks on record but out of the totals, exclude the date instead.' })));
     changesList(card, S);
   }
   function roundLabel(x) { return shortDate(x.date) + ' ' + clock(x.open); }
@@ -793,9 +865,9 @@
       el('dt', { text: 'Closes at' }), el('dd', {}, close),
       el('dt', { text: 'First class day' }), el('dd', {}, start, ' ', el('span', { class: 'muted', text: 'optional; the grid starts here' })),
       el('dt', { text: 'Last class day' }), el('dd', {}, end, ' ', el('span', { class: 'muted', text: 'optional; no windows after it' })),
-      el('dt', { text: 'No class on' }), el('dd', {}, skip, el('div', { class: 'muted', text: 'One date per line, YYYY-MM-DD (holidays, cancelled classes). No window opens on these days and they are not sessions. A day that did have a window but should not count is excluded instead (click its date in the grid, or use the Reports tab).' })),
-      el('dt', { text: 'Session code' }), el('dd', {}, el('label', {}, codeCb, 'students must type the 4-digit code of the round'),
-        el('div', { class: 'muted', text: 'The code is shown with the QR code (and in the status line) while a round is open; it is fixed for the round and changes with every round.' }))));
+      el('dt', { text: 'No class on' }), el('dd', {}, skip, el('div', { class: 'muted', text: 'One date per line, YYYY-MM-DD (holidays, cancelled classes). No window opens on these days and they are not sessions. A day that did have a window but should not count is excluded instead ("Exclude dates" on the Attendance tab, or the Reports tab).' })),
+      el('dt', { text: 'Session code' }), el('dd', {}, el('label', {}, codeCb, 'students must type the 4-digit session code'),
+        el('div', { class: 'muted', text: 'The code is shown with the QR code (QR code tab and full screen) and changes every 10 seconds, so a code relayed to someone outside the room is stale by the time it arrives. A code is accepted for 10 to 20 seconds after it appears; a wrong code can be retried without limit.' }))));
     card.appendChild(el('h2', { text: 'Attendance points', style: 'margin-top:18px' }));
     card.appendChild(el('dl', {},
       el('dt', { text: 'Points' }), el('dd', {}, pval, ' ', pmode),
@@ -804,7 +876,7 @@
       settingsDraft = form();
       busy = true; flash = null;
       call('saveSettings', [settingsDraft]).then(function (d) {
-        busy = false; D = d; settingsDraft = null; flash = { ok: 'Settings saved.' }; render(); refreshClasses();
+        busy = false; setD(d); settingsDraft = null; flash = { ok: 'Settings saved.' }; render(); refreshClasses();
       }).catch(fail);  // on a refused save the draft stays, so the form keeps the edits
     }), note));
 
@@ -824,6 +896,16 @@
     var xd = el('input', { type: 'date' }), xo = el('input', { type: 'time', value: S.schedule.open }), xc = el('input', { type: 'time', value: S.schedule.close });
     card.appendChild(el('div', { class: 'row', style: 'margin-top:8px' }, xd, xo, ' to ', xc,
       button('Add window', 'plain', function () { run('addExtra', [xd.value, xo.value, xc.value], 'Window added.'); })));
+    if (S.removed.length) {
+      card.appendChild(el('h2', { text: 'Removed scheduled rounds', style: 'margin-top:18px' }));
+      card.appendChild(el('p', { class: 'muted', text: 'Scheduled rounds removed with "Remove a round" (Attendance tab). Their marks were deleted. A day without its scheduled round is not a session. "Restore" puts the window back, empty.' }));
+      var rt = el('table', {}, el('tr', {}, el('th', { text: 'Round' }), el('th', {})));
+      S.removed.forEach(function (id) {
+        rt.appendChild(el('tr', {}, el('td', { text: roundLabel({ date: id.slice(0, 10), open: id.slice(11) }) + ' (' + id + ')' }),
+          el('td', {}, button('Restore', 'plain', function () { run('restoreRound', [id], 'Round restored.'); }))));
+      });
+      card.appendChild(rt);
+    }
 
     card.appendChild(el('h2', { text: 'Delete this class', style: 'margin-top:18px' }));
     var conf = el('input', { type: 'text', placeholder: 'type the class key: ' + cur, size: 30 });

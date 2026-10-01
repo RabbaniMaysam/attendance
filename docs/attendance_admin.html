@@ -408,10 +408,12 @@
   function codeLine(cls) {
     var e = el('p', { class: cls });
     if (!D || !D.state.code) return e;
-    var num = document.createTextNode(''), bar = el('div'), slot = -1;
+    var num = document.createTextNode(''), bar = el('div'), slot = -1, shown = false;
     e.appendChild(el('small', { text: 'Session code' })); e.appendChild(num); e.appendChild(el('span', { class: 'codebar', title: 'The code changes every 10 seconds.' }, bar));
     var tick = function () {
-      if (!document.contains(e)) { clearInterval(iv); return; }
+      // The element is created before it is put on the page; stop ticking once it has been on the page and is removed.
+      if (document.contains(e)) shown = true;
+      else if (shown) { clearInterval(iv); return; }
       var ms = serverNow(), k = Math.floor(ms / CODE_MS);
       if (k !== slot) { slot = k; num.textContent = sessionCode(D.secret, k); }
       bar.style.width = (100 * (1 - (ms - k * CODE_MS) / CODE_MS)) + '%';

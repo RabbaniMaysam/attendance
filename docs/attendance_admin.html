@@ -466,7 +466,7 @@
       });
       card.appendChild(t);
     }
-    var xd = el('input', { type: 'date' }), xo = el('input', { type: 'time', value: sch.open }), xc = el('input', { type: 'time', value: sch.close });
+    var xd = el('input', { type: 'date' }), xo = el('input', { type: 'time', value: S.schedule.open }), xc = el('input', { type: 'time', value: S.schedule.close });
     card.appendChild(el('div', { class: 'row', style: 'margin-top:8px' }, xd, xo, ' to ', xc,
       button('Add window', 'plain', function () { run('addExtra', [xd.value, xo.value, xc.value], 'Window added.'); })));
 

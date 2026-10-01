@@ -173,5 +173,45 @@ ok(s.questions.length === 1 && att.question(s, q1.id) === null, 'question delete
 throws(() => att.ADMIN.deleteQuestion(s, q1.id), /no longer exists/, 'deleting twice refused');
 ok(att.upgradeAtt({ title: 'x' }).questions.length === 0, 'upgrade adds the questions list');
 
+// ---- sessions and points: a fresh class, Tue/Thu Sep 1 to Sep 29 with Sep 8 skipped (8 sessions), 7 points for the semester
+const g = att.newAttClass('ECON 102', edt('2026-08-20', '10:00'));
+att.ADMIN.saveSettings(g, { title: 'ECON 102', days: [2, 4], open: '07:50', close: '08:05', start: '2026-09-01', end: '2026-09-29', skip: '2026-09-08', pointsMode: 'total', points: '7' });
+ok(g.points.mode === 'total' && g.points.value === 7, 'points saved');
+ok(att.upgradeAtt({ title: 'x' }).points.value === 0 && att.upgradeAtt({ title: 'x' }).points.mode === 'total', 'upgrade adds the points');
+throws(() => att.ADMIN.saveSettings(g, { title: 'ECON 102', days: [2], open: '07:50', close: '08:05', start: '', end: '', skip: '', points: '-1' }), /0 to 1000/, 'negative points refused');
+att.ADMIN.saveSettings(g, { title: 'ECON 102', days: [2, 4], open: '07:50', close: '08:05', start: '2026-09-01', end: '2026-09-29', skip: '2026-09-08' });
+ok(g.points.value === 7 && g.points.mode === 'total', 'saving the schedule without points keeps the points');
+const mid = edt('2026-09-10', '12:00');  // after the Sep 10 round
+let sd = att.sessionDates(g, [], mid);
+ok(sd.join() === '2026-09-01,2026-09-03,2026-09-10,2026-09-15,2026-09-17,2026-09-22,2026-09-24,2026-09-29', 'session dates: all scheduled days of the semester, past and future, minus the skipped one');
+ok(att.sessionDates(g, ['2026-09-07 20:00'], mid).length === 9, 'a round with marks on an unscheduled day is a session');
+att.ADMIN.addExtra(g, '2026-09-11', '09:00', '09:10');
+ok(att.sessionDates(g, [], mid).length === 9 && att.sessionDates(g, [], mid)[3] === '2026-09-11', 'a one-off window adds its date as a session');
+att.ADMIN.removeExtra(g, '2026-09-11', '09:00');
+g.schedule.end = '';
+ok(att.sessionDates(g, [], mid).join() === '2026-09-01,2026-09-03,2026-09-10', 'without a last class day the sessions end today');
+ok(att.sessionDates(g, ['2026-09-22 07:50'], mid).pop() === '2026-09-22', 'or at the latest round');
+g.schedule.end = '2026-09-29';
+g.roster = [{ first: 'A', last: 'A', email: 'a@x.edu' }, { first: 'B', last: 'B', email: 'b@x.edu' }];
+let rl = att.rounds(g, [], mid);
+ok(rl.map(x => x.id).join() === '2026-09-01 07:50,2026-09-03 07:50,2026-09-10 07:50', 'three rounds have opened');
+let rp = att.report(g, rl, [{ round: '2026-09-01 07:50', email: 'a@x.edu', present: 1 }, { round: '2026-09-03 07:50', email: 'a@x.edu', present: 1 },
+  { round: '2026-09-10 07:50', email: 'a@x.edu', present: 0 }, { round: '2026-09-03 07:50', email: 'b@x.edu', present: 1 }, { round: '2026-09-03 07:50', email: 'zz@x.edu', present: 1 }], mid);
+ok(rp.dates.length === 8 && Math.abs(rp.perSession - 0.875) < 1e-9 && Math.abs(rp.total - 7) < 1e-9, '7 points over 8 sessions: 0.875 each');
+ok(rp.sessions.length === 8 && rp.sessions[1].rounds[0].present === 2 && rp.sessions[2].rounds[0].present === 0 && rp.sessions[3].opened === false, 'session counts: 2 present on Sep 3 (a dropped student not counted), 0 on Sep 10, Sep 15 not opened');
+ok(rp.students['a@x.edu'].present === 2 && rp.students['a@x.edu'].rounds === 3 && Math.abs(rp.students['a@x.edu'].points - 1.75) < 1e-9 && Math.abs(rp.students['a@x.edu'].possible - 2.625) < 1e-9,
+  'student A: 2 of 3 rounds, 1.75 points of 2.625 possible so far');
+ok(rp.students['b@x.edu'].present === 1 && Math.abs(rp.students['b@x.edu'].points - 0.875) < 1e-9, 'student B: 1 round, 0.875 points');
+// A day with two rounds splits the session's points; per-session mode uses the value as is.
+att.ADMIN.addExtra(g, '2026-09-10', '09:00', '09:10');
+rl = att.rounds(g, [], mid);
+rp = att.report(g, rl, [{ round: '2026-09-10 07:50', email: 'a@x.edu', present: 1 }, { round: '2026-09-10 09:00', email: 'b@x.edu', present: 1 }], mid);
+ok(rl.length === 4 && Math.abs(rp.students['a@x.edu'].points - 0.4375) < 1e-9 && Math.abs(rp.students['b@x.edu'].points - 0.4375) < 1e-9 && rp.dates.length === 8,
+  'two rounds on one day: each is worth half the session');
+g.points = { mode: 'per', value: 0.2 };
+rp = att.report(g, rl, [{ round: '2026-09-01 07:50', email: 'a@x.edu', present: 1 }], mid);
+ok(Math.abs(rp.perSession - 0.2) < 1e-9 && Math.abs(rp.total - 1.6) < 1e-9 && Math.abs(rp.students['a@x.edu'].points - 0.2) < 1e-9 && Math.abs(rp.students['a@x.edu'].possible - 0.6) < 1e-9,
+  'per-session mode: 0.2 per session, 1.6 for the semester, 0.6 possible after three sessions');
+
 console.log('passed', pass, 'failed', fail);
 process.exit(fail ? 1 : 0);

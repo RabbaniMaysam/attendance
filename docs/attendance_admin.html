@@ -29,13 +29,19 @@
     table { border-collapse: collapse; width: 100%; }
     th, td { text-align: left; vertical-align: top; padding: 6px 8px; border-top: 1px solid var(--line); white-space: nowrap; }
     th { border-top: 0; font-size: 13px; color: var(--muted); font-weight: 600; }
-    th.date { writing-mode: vertical-rl; transform: rotate(180deg); text-align: left; padding: 8px 4px; font-weight: 500; }
+    th.date { writing-mode: vertical-rl; transform: rotate(180deg); text-align: left; padding: 6px 1px; font-weight: 500; font-size: 12px; }
     th.date.open { color: var(--ok); font-weight: 700; }
-    td.mark { text-align: center; }
-    td.mark button { width: 30px; height: 26px; padding: 0; border-radius: 5px; border: 1px solid var(--line); background: #fff; color: transparent; }
+    td.mark { text-align: center; padding: 3px 1px; }
+    td.mark button { width: 22px; height: 22px; padding: 0; border-radius: 4px; border: 1px solid var(--line); background: #fff; color: transparent; font-size: 12px; }
     td.mark button.on { background: #dff3e4; border-color: var(--ok); color: var(--ok); font-weight: 700; }
     td.mark button.inst { background: #fff0b3; border-color: #b58900; color: #6b4e00; font-weight: 700; }
     td.mark button.rev { background: #fde2e2; border-color: #c0392b; color: #c0392b; font-weight: 700; }
+    td.mark button.pend { outline: 2px dashed var(--accent); outline-offset: 1px; }
+    td.mark button:disabled { opacity: 1; cursor: default; }
+    td.mark button.lock { cursor: not-allowed; }
+    button.view { background: #fff; color: var(--ink); border-color: var(--line); padding: 3px 10px; }
+    button.view.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+    .savebar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
     td.total { text-align: right; font-weight: 600; }
     button { font: inherit; padding: 4px 11px; border-radius: 6px; border: 1px solid var(--accent);
              background: var(--accent); color: #fff; cursor: pointer; }
@@ -82,7 +88,7 @@
   var TOKEN_KEY = 'signup_token';  // shared with the sign-up instructor page: one sign-in serves both
   var TZ = 'America/New_York';
   var DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  var TABS = ['Attendance', 'Questions', 'QR code', 'Settings', 'Roster'];
+  var TABS = ['Attendance', 'Questions', 'QR code', 'Reports', 'Log', 'Settings', 'Roster'];
   var token = '', me = '', classes = [], cur = '', D = null, tab = 'Attendance';
   var flash = null, busy = false, timer = null;
   try { token = sessionStorage.getItem(TOKEN_KEY) || ''; cur = sessionStorage.getItem('att_admin_class') || ''; } catch (e) {}
@@ -111,7 +117,7 @@
   }
 
   function setClass(key) {
-    cur = key || ''; D = null; settingsDraft = null;
+    cur = key || ''; D = null; settingsDraft = null; pending = {}; logRows = null;
     try { sessionStorage.setItem('att_admin_class', cur); } catch (e) {}
   }
 
@@ -161,7 +167,7 @@
   function poll() {
     clearTimeout(timer);
     var ms = tab === 'Questions' ? 4000 : 10000;
-    timer = setTimeout(function () { if (tab !== 'Settings' && tab !== 'Roster' && cur && !document.hidden) loadClass(true); poll(); }, ms);
+    timer = setTimeout(function () { if (tab !== 'Settings' && tab !== 'Roster' && tab !== 'Log' && cur && !document.hidden) loadClass(true); poll(); }, ms);
   }
 
   // Live status of the open window and question: "Open, 4:32 left · 12 of 40 marked". Ticks once a second until the next redraw.
@@ -218,8 +224,8 @@
   }
 
   function signOut() {
-    if (settingsDirty()) { leaveSettings().then(function (go) { if (go) signOut(); }); return; }
-    setToken(''); D = null; settingsDraft = null;
+    if (settingsDirty() || marksDirty()) { leaveDrafts().then(function (go) { if (go) signOut(); }); return; }
+    setToken(''); D = null; settingsDraft = null; pending = {};
     whenGoogleReady(function () { google.accounts.id.disableAutoSelect(); });
     showSignIn();
   }
@@ -246,6 +252,9 @@
   function clock(hhmm) { var h = Number(hhmm.split(':')[0]), m = hhmm.split(':')[1]; return ((h + 11) % 12 + 1) + ':' + m + (h < 12 ? ' am' : ' pm'); }
   function shortDate(ymd) { return new Intl.DateTimeFormat('en-US', { timeZone: TZ, weekday: 'short', month: 'short', day: 'numeric' }).format(new Date(ymd + 'T12:00:00-05:00')); }
   function isoClock(iso) { return new Intl.DateTimeFormat('en-US', { timeZone: TZ, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(iso)); }
+  function isoFull(iso) { return new Intl.DateTimeFormat('en-US', { timeZone: TZ, year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit' }).format(new Date(iso)); }
+  function monthDay(ymd) { return new Intl.DateTimeFormat('en-US', { timeZone: TZ, month: 'short', day: 'numeric' }).format(new Date(ymd + 'T12:00:00-05:00')); }
+  function num(x, d) { return (Math.round(x * Math.pow(10, d)) / Math.pow(10, d)).toFixed(d); }
   function fullName(r) { return (r.first + ' ' + r.last).trim(); }
   function studentLink() { return location.href.replace(/attendance_admin\.html.*$/, '') + 'attendance.html?c=' + encodeURIComponent(cur); }
   function button(label, cls, fn) { return el('button', { text: label, class: cls, disabled: busy, on: { click: fn } }); }
@@ -290,7 +299,8 @@
   function settingsDirty() { return !!(settingsDraft && D && JSON.stringify(settingsDraft) !== JSON.stringify(settingsOf(D.state))); }
   function settingsOf(S) {
     return { title: S.title, days: S.schedule.days.slice(), open: S.schedule.open, close: S.schedule.close,
-             start: S.schedule.start || '', end: S.schedule.end || '', skip: S.skip.join('\n') };
+             start: S.schedule.start || '', end: S.schedule.end || '', skip: S.skip.join('\n'),
+             pointsMode: S.points.mode, points: String(S.points.value) };
   }
   /** Resolves true when it is fine to leave the Settings form (nothing to save, saved, or discarded), false to stay. */
   function leaveSettings() {
@@ -305,7 +315,38 @@
       }).catch(function (e) { fail(e); return false; });
     });
   }
-  window.addEventListener('beforeunload', function (ev) { if (settingsDirty()) { ev.preventDefault(); ev.returnValue = ''; } });
+
+  // Unsaved cell changes on the Attendance grid: 'round|email' -> true (present) or false (absent). Saved as one batch.
+  var pending = {};
+  function marksDirty() { return Object.keys(pending).length > 0; }
+  function pendingList() { return Object.keys(pending).map(function (k) { var p = k.split('|'); return [p[0], p[1], pending[k]]; }); }
+  function sendMarks(list) {
+    busy = true; flash = null;
+    return call('setMarks', [list]).then(function (d) {
+      busy = false; D = d; pending = {}; flash = { ok: list.length + ' change' + (list.length === 1 ? '' : 's') + ' saved.' }; render(); return true;
+    }).catch(function (e) { fail(e); return false; });
+  }
+  /** The Save button: confirms, then saves every pending cell. */
+  function saveMarks() {
+    var list = pendingList();
+    if (!list.length) return Promise.resolve(true);
+    var ups = list.filter(function (x) { return x[2]; }).length;
+    return ask('Save ' + list.length + ' change' + (list.length === 1 ? '' : 's') + ' to attendance?',
+      [ups + ' to present, ' + (list.length - ups) + ' to absent. Each change is recorded with the time and your account and listed under "Manual changes".'], 'Save', false)
+      .then(function (yes) { return yes ? sendMarks(list) : false; });
+  }
+  function leaveMarks() {
+    if (!marksDirty()) return Promise.resolve(true);
+    return choose('Save the attendance changes?', ['You changed ' + pendingList().length + ' cell(s) of the grid but did not save them.'],
+      [{ label: "Don't save", value: 'discard', cls: 'plain' }, { label: 'Save', value: 'save' }]).then(function (v) {
+      if (v === 'discard') { pending = {}; return true; }
+      if (v !== 'save') return false;
+      return sendMarks(pendingList());
+    });
+  }
+  /** Both drafts (settings form, grid changes) must be saved or discarded before the tab, class, or sign-in changes. */
+  function leaveDrafts() { return leaveSettings().then(function (go) { return go ? leaveMarks() : false; }); }
+  window.addEventListener('beforeunload', function (ev) { if (settingsDirty() || marksDirty()) { ev.preventDefault(); ev.returnValue = ''; } });
 
   /** Calls fn once the QR library is loaded (from cdnjs on first use). */
   function withQr(fn) {
@@ -370,7 +411,7 @@
       var sel = el('select', { disabled: busy, on: { change: function (ev) {
         var key = ev.target.value;
         flash = null;
-        leaveSettings().then(function (go) { if (!go) { ev.target.value = cur; return; } settingsDraft = null; setClass(key); loadClass(false); });
+        leaveDrafts().then(function (go) { if (!go) { ev.target.value = cur; return; } settingsDraft = null; setClass(key); loadClass(false); });
       } } });
       classes.forEach(function (c) { sel.appendChild(el('option', { value: c.key, text: (c.title || c.key) + ' (' + c.key + ')' })); });
       sel.value = cur;
@@ -398,21 +439,28 @@
     TABS.forEach(function (t) {
       tabs.appendChild(el('button', { class: 'tab' + (t === tab ? ' on' : ''), text: t, on: { click: function () {
         flash = null;
-        leaveSettings().then(function (go) { if (!go) return; tab = t; render(); poll(); });
+        leaveDrafts().then(function (go) { if (!go) return; tab = t; render(); poll(); if (t === 'Log' && logRows === null) loadLog(); });
       } } }));
     });
     app.appendChild(tabs);
     var card = el('div', { class: 'card' });
-    ({ Attendance: attendance, Questions: questions, 'QR code': qrTab, Settings: settings, Roster: roster })[tab](card);
+    ({ Attendance: attendance, Questions: questions, 'QR code': qrTab, Reports: reports, Log: logTab, Settings: settings, Roster: roster })[tab](card);
     app.appendChild(card);
     window.scrollTo(0, keepScroll);
   }
 
   // ---- Attendance grid
+  var gridView = '';  // 'today' (this day's rounds, the live view) or 'all'; chosen on first draw
   function attendance(card) {
-    var S = D.state;
+    var S = D.state, R = D.report, locked = !!D.open;
     card.appendChild(liveStatus('banner ' + (D.open ? 'ok' : 'note')));
     var minutes = el('input', { type: 'number', min: 1, max: 600, value: 10, style: 'width:70px' });
+    var byKey = {};
+    D.marks.forEach(function (m) { byKey[m.round + '|' + m.email] = m; });
+    function has(id, email) { var m = byKey[id + '|' + email]; return !!(m && m.present); }
+    var todays = D.rounds.filter(function (x) { return x.date === D.today; });
+    if (!gridView) gridView = todays.length ? 'today' : 'all';
+    var rounds = gridView === 'today' ? todays : D.rounds;
     card.appendChild(el('div', { class: 'row', style: 'margin-top:12px' },
       D.open ? button('Close attendance now', '', function () {
         ask('Close attendance now?', ['Students can no longer mark themselves present today. The marks made so far are kept. "Open attendance now" reopens it.'], 'Close now', false)
@@ -420,64 +468,98 @@
       }) : null,
       D.open ? el('span', { class: 'muted', text: '·' }) : null,
       button('Open attendance now', D.open ? 'plain' : '', function () {
-        ask('Open attendance now for ' + minutes.value + ' minutes?', [(D.open ? 'The open round is closed and a new round starts: ' : 'A new round starts: ') + 'every student can mark themselves present until ' + minutes.value + ' minutes from now. Each round is its own column in the grid; the window is listed under Settings.'], 'Open now', false)
-          .then(function (yes) { if (yes) run('openNow', [Number(minutes.value)], 'Attendance is open.'); });
+        leaveMarks().then(function (go) {
+          if (!go) return;
+          return ask('Open attendance now for ' + minutes.value + ' minutes?', [(D.open ? 'The open round is closed and a new round starts: ' : 'A new round starts: ') + 'every student can mark themselves present until ' + minutes.value + ' minutes from now. Each round is its own column in the grid; the window is listed under Settings.'], 'Open now', false)
+            .then(function (yes) { if (yes) run('openNow', [Number(minutes.value)], 'Attendance is open.'); });
+        });
       }), el('label', {}, 'for ', minutes, ' minutes'),
       el('span', { class: 'muted', text: '·' }),
       button('Download CSV', 'plain', function () {
-        // Two columns per round: present (1/0) and the manual change (+1, -1, or 0).
+        // Two columns per round: present (1/0) and the manual change (+1, -1, or 0); then the totals and the points.
         var head = ['Last name', 'First name', 'Email'];
-        D.rounds.forEach(function (x) { head.push(roundLabel(x), roundLabel(x) + ' change'); });
-        head.push('Present', 'Rounds', 'Changes');
+        D.rounds.forEach(function (x) { head.push(csvLabel(x), csvLabel(x) + ' change'); });
+        head.push('Present', 'Rounds', 'Percent', 'Changes', 'Points', 'Possible so far', 'Total points');
         var rows = [head].concat(S.roster.map(function (r) {
-          var row = [r.last, r.first, r.email], n = 0, edits = 0;
+          var row = [r.last, r.first, r.email], n = 0, edits = 0, st = R.students[r.email];
           D.rounds.forEach(function (x) {
             var m = byKey[x.id + '|' + r.email], c = changeOf(m);
             if (m && m.present) n++;
             if (c) edits++;
             row.push(m && m.present ? 1 : 0, c);
           });
-          return row.concat([n, D.rounds.length, edits]);
+          return row.concat([n, D.rounds.length, D.rounds.length ? num(100 * n / D.rounds.length, 1) : '', edits, num(st.points, 3), num(st.possible, 3), num(R.total, 3)]);
         }));
         download('attendance_' + cur + '_' + D.today + '.csv', rows);
       })));
     if (!S.roster.length) { card.appendChild(el('p', { class: 'muted', text: 'The roster is empty. Import it on the Roster tab.' })); return; }
-    var byKey = {};
-    D.marks.forEach(function (m) { byKey[m.round + '|' + m.email] = m; });
-    function has(id, email) { var m = byKey[id + '|' + email]; return !!(m && m.present); }
+
+    // view switch and the save bar
+    var switcher = el('div', { class: 'row', style: 'margin-top:4px' },
+      el('button', { class: 'view' + (gridView === 'today' ? ' on' : ''), text: 'Today (' + todays.length + (todays.length === 1 ? ' round)' : ' rounds)'), on: { click: function () { gridView = 'today'; render(); } } }),
+      el('button', { class: 'view' + (gridView === 'all' ? ' on' : ''), text: 'All rounds (' + D.rounds.length + ')', on: { click: function () { gridView = 'all'; render(); } } }),
+      el('span', { class: 'muted', text: locked ? 'Attendance is open: the grid is live and read-only. Cells can be changed after it closes.'
+        : 'Click cells to change them, then save. Nothing changes until you save.' }));
+    card.appendChild(switcher);
+    if (marksDirty()) {
+      var k = pendingList().length;
+      card.appendChild(el('div', { class: 'banner note savebar' }, el('b', { text: k + ' unsaved change' + (k === 1 ? '' : 's') }),
+        el('button', { text: 'Save changes', disabled: busy || locked, on: { click: saveMarks } }),
+        el('button', { class: 'plain', text: 'Discard', disabled: busy, on: { click: function () { pending = {}; render(); } } }),
+        locked ? el('span', { text: 'Attendance is open; save after it closes.' }) : null));
+    }
+    if (!rounds.length) {
+      card.appendChild(el('p', { class: 'muted', style: 'margin-top:10px', text: gridView === 'today' ? 'No round has opened today.' : 'No round has opened yet.' }));
+      return;
+    }
+
+    // the grid: one column per round; a label shows the time only on days with several rounds
+    var perDate = {};
+    D.rounds.forEach(function (x) { perDate[x.date] = (perDate[x.date] || 0) + 1; });
+    var showPoints = S.points.value > 0;
     var head = el('tr', {}, el('th', { text: 'Student' }));
-    D.rounds.forEach(function (x) { head.appendChild(el('th', { class: 'date' + (D.open && x.id === D.open.id ? ' open' : ''), text: roundLabel(x) })); });
-    head.appendChild(el('th', { text: 'Present' }));
-    head.appendChild(el('th', { text: 'Changed' }));
+    rounds.forEach(function (x) {
+      head.appendChild(el('th', { class: 'date' + (D.open && x.id === D.open.id ? ' open' : ''), title: csvLabel(x),
+        text: monthDay(x.date) + (perDate[x.date] > 1 ? ' ' + clock(x.open) : '') }));
+    });
+    ['Present', '%'].concat(showPoints ? ['Points'] : [], ['Changed']).forEach(function (h) { head.appendChild(el('th', { text: h })); });
     var t = el('table', {}, head);
     S.roster.forEach(function (r) {
       var tr = el('tr', {}, el('td', {}, fullName(r), el('div', { class: 'muted', text: r.email })));
-      var n = 0, up = 0, down = 0;
+      var n = 0, up = 0, down = 0, st = R.students[r.email];
       D.rounds.forEach(function (x) {
-        var m = byKey[x.id + '|' + r.email], c = changeOf(m), on = !!(m && m.present);
-        if (on) n++;
+        var m = byKey[x.id + '|' + r.email], c = changeOf(m);
+        if (m && m.present) n++;
         if (c > 0) up++; else if (c < 0) down++;
-        var b = el('button', { class: on ? (c ? 'inst' : 'on') : (c ? 'rev' : ''), text: on ? '✓' : '✗', disabled: busy,
-          title: cellTitle(m, c), on: { click: function () { run('setMark', [x.id, r.email, !on], null); } } });
+      });
+      rounds.forEach(function (x) {
+        var m = byKey[x.id + '|' + r.email], c = changeOf(m), on = !!(m && m.present), k = x.id + '|' + r.email;
+        var shown = k in pending ? pending[k] : on;
+        var b = el('button', { class: (shown ? (c > 0 || (k in pending && !on) ? 'inst' : 'on') : (c < 0 || (k in pending && on) ? 'rev' : '')) + (k in pending ? ' pend' : '') + (locked ? ' lock' : ''),
+          text: shown ? '✓' : '✗', disabled: busy || locked,
+          title: locked ? 'Attendance is open. Cells can be changed after it closes.' : (k in pending ? 'Unsaved change. Click to undo.' : cellTitle(m, c)),
+          on: { click: function () { if (k in pending) delete pending[k]; else pending[k] = !on; render(); } } });
         tr.appendChild(el('td', { class: 'mark' }, b));
       });
       tr.appendChild(el('td', { class: 'total', text: n + ' / ' + D.rounds.length }));
+      tr.appendChild(el('td', { class: 'total', text: D.rounds.length ? num(100 * n / D.rounds.length, 0) + '%' : '' }));
+      if (showPoints) tr.appendChild(el('td', { class: 'total', title: 'of ' + num(st.possible, 2) + ' possible so far, ' + num(R.total, 2) + ' in the semester', text: num(st.points, 2) }));
       tr.appendChild(el('td', { class: 'total', text: (up ? '+' + up : '') + (up && down ? ' ' : '') + (down ? '−' + down : '') }));
       t.appendChild(tr);
     });
     var tot = el('tr', {}, el('td', { text: 'Present' }));
-    D.rounds.forEach(function (x) { tot.appendChild(el('td', { class: 'mark', text: String(S.roster.filter(function (r) { return has(x.id, r.email); }).length) })); });
-    tot.appendChild(el('td'));
-    tot.appendChild(el('td'));
+    rounds.forEach(function (x) { tot.appendChild(el('td', { class: 'mark', text: String(S.roster.filter(function (r) { return has(x.id, r.email); }).length) })); });
+    for (var i = 0; i < 3 + (showPoints ? 1 : 0); i++) tot.appendChild(el('td'));
     t.appendChild(tot);
     card.appendChild(el('div', { class: 'scroll' }, t));
     card.appendChild(el('p', { class: 'muted', style: 'margin-top:10px' },
       el('span', { class: 'swatch on' }), ' marked by the student during the round; ', el('span', { class: 'swatch inst' }),
       ' marked present by you (change +1); ', el('span', { class: 'swatch rev' }),
-      ' marked by the student, set absent by you (change −1). Click any cell to switch it; a cell set back to what the student did has change 0. "Changed" counts the rounds changed by hand, up and down. One column per round (each scheduled or "open now" window that has opened, from the semester start through now, plus any round with a mark); several rounds on one day are several columns. The grid refreshes every 10 seconds.'));
+      ' marked by the student, set absent by you (change −1). A dashed outline is an unsaved change. A cell set back to what the student did has change 0; "Changed" counts the rounds changed by hand, up and down. "Present" and "%" count all rounds that have opened; "Points" are the attendance points earned so far (Settings sets them; the Reports tab has the details). One column per round (each scheduled or "open now" window that has opened, from the first class day through now, plus any round with a mark); several rounds on one day are several columns, labelled with their time. The grid refreshes every 10 seconds.'));
     changesList(card, S);
   }
   function roundLabel(x) { return shortDate(x.date) + ' ' + clock(x.open); }
+  function csvLabel(x) { return x.date + ' ' + clock(x.open); }
   // The manual change of a cell: +1 present by hand, -1 set absent after the student's own mark, 0 otherwise.
   function changeOf(m) { return m ? (m.present ? 1 : 0) - (m.self ? 1 : 0) : 0; }
   function cellTitle(m, c) {
@@ -506,6 +588,77 @@
     card.appendChild(el('div', { class: 'scroll' }, t));
   }
 
+  // ---- Reports: sessions and students with counts and points
+  function pointsText(S, R) {
+    return S.points.value > 0
+      ? (S.points.mode === 'total' ? num(S.points.value, 2) + ' points for the semester, divided among ' + R.dates.length + ' sessions: ' : '') + num(R.perSession, 3) + ' points per session'
+        + (S.points.mode === 'per' ? ' (' + num(R.total, 2) + ' for the ' + R.dates.length + ' sessions)' : '')
+      : 'No attendance points are set (Settings tab).';
+  }
+  function reports(card) {
+    var S = D.state, R = D.report, n = S.roster.length;
+    var opened = R.sessions.filter(function (x) { return x.opened; }).length;
+    card.appendChild(el('h2', { text: 'Sessions' }));
+    card.appendChild(el('p', { class: 'muted', text: R.dates.length + ' sessions from ' + (R.dates[0] ? shortDate(R.dates[0]) : '?') + ' to ' + (R.dates.length ? shortDate(R.dates[R.dates.length - 1]) : '?')
+      + ' (the scheduled class days minus the no-class days, plus one-off windows and any day with marks); ' + opened + ' have had attendance. ' + pointsText(S, R)
+      + ' A session with several rounds splits its points equally among them.' }));
+    var t = el('table', {}, el('tr', {}, el('th', { text: 'Date' }), el('th', { text: 'Rounds' }), el('th', { text: 'Present' }), el('th', { text: '% of ' + n }), el('th', { text: 'Points' })));
+    R.sessions.forEach(function (x) {
+      var k = x.rounds.map(function (r) { return r.present; });
+      t.appendChild(el('tr', {}, el('td', { text: shortDate(x.date) + ' (' + x.date + ')' }),
+        el('td', { class: x.opened ? '' : 'muted', text: x.opened ? x.rounds.map(function (r) { return clock(r.open); }).join(', ') : (x.date <= D.today ? 'no attendance taken' : 'upcoming') }),
+        el('td', { text: k.join(', ') }),
+        el('td', { text: n ? k.map(function (v) { return num(100 * v / n, 0) + '%'; }).join(', ') : '' }),
+        el('td', { text: num(x.points, 3) })));
+    });
+    card.appendChild(el('div', { class: 'scroll' }, t));
+
+    card.appendChild(el('h2', { text: 'Students', style: 'margin-top:18px' }));
+    var rows = S.roster.map(function (r) {
+      var st = R.students[r.email];
+      return { r: r, present: st.present, rounds: st.rounds, pct: st.rounds ? 100 * st.present / st.rounds : 0, points: st.points, possible: st.possible };
+    });
+    card.appendChild(el('div', { class: 'row' }, button('Download CSV', 'plain', function () {
+      download('attendance_summary_' + cur + '_' + D.today + '.csv', [['Last name', 'First name', 'Email', 'Present', 'Rounds', 'Percent', 'Points', 'Possible so far', 'Total points']]
+        .concat(rows.map(function (x) { return [x.r.last, x.r.first, x.r.email, x.present, x.rounds, num(x.pct, 1), num(x.points, 3), num(x.possible, 3), num(R.total, 3)]; })));
+    }), el('span', { class: 'muted', text: '"Present" counts the rounds the student was present in, of the ' + D.rounds.length + ' rounds that have opened. "Points" are earned so far, of the points of the sessions held so far and of the semester total.' })));
+    var u = el('table', {}, el('tr', {}, el('th', { text: 'Student' }), el('th', { text: 'Present' }), el('th', { text: '%' }), el('th', { text: 'Points' }), el('th', { text: 'Possible so far' }), el('th', { text: 'Semester' })));
+    rows.forEach(function (x) {
+      u.appendChild(el('tr', {}, el('td', {}, fullName(x.r), el('div', { class: 'muted', text: x.r.email })),
+        el('td', { class: 'total', text: x.present + ' / ' + x.rounds }), el('td', { class: 'total', text: num(x.pct, 0) + '%' }),
+        el('td', { class: 'total', text: num(x.points, 2) }), el('td', { class: 'total', text: num(x.possible, 2) }), el('td', { class: 'total', text: num(R.total, 2) })));
+    });
+    card.appendChild(el('div', { class: 'scroll' }, u));
+  }
+
+  // ---- Log: every student mark and answer, every instructor action, and every refused attempt
+  var logRows = null, logQuery = '', logWho = 'all';
+  function loadLog() {
+    call('log', [logQuery, logWho, 2000]).then(function (d) { logRows = d.rows; render(); }).catch(fail);
+  }
+  function logTab(card) {
+    var q = el('input', { type: 'search', value: logQuery, placeholder: 'search (name, email, action, round)', size: 36 });
+    var who = el('select', {}, el('option', { value: 'all', text: 'Everything' }), el('option', { value: 'instructor', text: 'My actions' }), el('option', { value: 'students', text: 'Students' }));
+    who.value = logWho;
+    var go = function () { logQuery = q.value; logWho = who.value; logRows = null; render(); loadLog(); };
+    q.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') go(); });
+    who.addEventListener('change', go);
+    card.appendChild(el('div', { class: 'row' }, q, who, button('Search', 'plain', go), button('Refresh', 'plain', go),
+      logRows && logRows.length ? button('Download CSV', 'plain', function () {
+        download('attendance_log_' + cur + '_' + D.today + '.csv', [['Time (New York)', 'Time (ISO)', 'Account', 'Action', 'Detail']]
+          .concat(logRows.map(function (r) { return [isoFull(r.time), r.time, r.actor, r.action, r.detail]; })));
+      }) : null));
+    card.appendChild(el('p', { class: 'muted', text: 'Newest first, up to 2000 rows. Students: each mark ("present"), each answer, and each refused attempt with its reason. You: every change (open and close now, cell changes, settings, windows, roster, questions) and refused actions. Marked by "(instructor)" after the account.' }));
+    if (logRows === null) { card.appendChild(el('p', { class: 'muted', text: 'Loading...' })); return; }
+    if (!logRows.length) { card.appendChild(el('p', { class: 'muted', text: 'No entries.' })); return; }
+    var t = el('table', {}, el('tr', {}, el('th', { text: 'Time' }), el('th', { text: 'Account' }), el('th', { text: 'Action' }), el('th', { text: 'Detail' })));
+    logRows.forEach(function (r) {
+      t.appendChild(el('tr', {}, el('td', { text: isoFull(r.time) }), el('td', { text: r.actor }),
+        el('td', { text: r.action, style: /^refused/.test(r.action) ? 'color:var(--warn)' : '' }), el('td', { text: r.detail, style: 'white-space:normal' })));
+    });
+    card.appendChild(el('div', { class: 'scroll' }, t));
+  }
+
   // ---- Settings
   function settings(card) {
     var S = D.state, v = settingsDraft || settingsOf(S);
@@ -517,14 +670,18 @@
     var open = el('input', { type: 'time', value: v.open }), close = el('input', { type: 'time', value: v.close });
     var start = el('input', { type: 'date', value: v.start }), end = el('input', { type: 'date', value: v.end });
     var skip = el('textarea', { value: v.skip, placeholder: '2026-11-26' });
+    var pmode = el('select', {}, el('option', { value: 'total', text: 'total for the semester, divided among all sessions' }), el('option', { value: 'per', text: 'per session' }));
+    pmode.value = v.pointsMode;
+    var pval = el('input', { type: 'number', min: 0, max: 1000, step: 'any', value: v.points, style: 'width:90px' });
     var form = function () {
       return { title: title.value, days: days.filter(function (d) { return d.cb.checked; }).map(function (d) { return d.i; }),
-               open: open.value, close: close.value, start: start.value, end: end.value, skip: skip.value };
+               open: open.value, close: close.value, start: start.value, end: end.value, skip: skip.value,
+               pointsMode: pmode.value, points: pval.value };
     };
     // Every edit updates the draft, so the form survives redraws and the tab-change check sees it.
     var note = el('span', { class: 'muted', text: settingsDirty() ? 'Unsaved changes.' : '' });
     var edited = function () { settingsDraft = form(); note.textContent = settingsDirty() ? 'Unsaved changes.' : ''; };
-    [title, open, close, start, end, skip].concat(days.map(function (d) { return d.cb; })).forEach(function (inp) {
+    [title, open, close, start, end, skip, pmode, pval].concat(days.map(function (d) { return d.cb; })).forEach(function (inp) {
       inp.addEventListener('input', edited);
       inp.addEventListener('change', edited);
     });
@@ -538,6 +695,10 @@
       el('dt', { text: 'First class day' }), el('dd', {}, start, ' ', el('span', { class: 'muted', text: 'optional; the grid starts here' })),
       el('dt', { text: 'Last class day' }), el('dd', {}, end, ' ', el('span', { class: 'muted', text: 'optional; no windows after it' })),
       el('dt', { text: 'No class on' }), el('dd', {}, skip, el('div', { class: 'muted', text: 'One date per line, YYYY-MM-DD (holidays, cancelled classes).' }))));
+    card.appendChild(el('h2', { text: 'Attendance points', style: 'margin-top:18px' }));
+    card.appendChild(el('dl', {},
+      el('dt', { text: 'Points' }), el('dd', {}, pval, ' ', pmode),
+      el('dt', { text: 'Now' }), el('dd', { class: 'muted', text: pointsText(S, D.report) + ' Sessions are all class days of the semester, from the first to the last class day, whether or not attendance was taken; the Reports tab lists them.' })));
     card.appendChild(el('div', { class: 'row' }, button('Save', '', function () {
       settingsDraft = form();
       busy = true; flash = null;

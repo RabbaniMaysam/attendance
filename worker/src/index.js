@@ -298,24 +298,34 @@ function writeAtt(env, key, s) {
   return env.DB.prepare('UPDATE att_classes SET state = ? WHERE key = ?').bind(JSON.stringify(s), key).run();
 }
 
+// The attendance log shares the log table with the sign-up tool; its class key is prefixed so the two never mix.
+const attLog = (env, key, actor, action, detail) => logNow(env, 'att:' + key, actor, action, detail || '');
+
 async function attStudentCall(env, real, action, key, args) {
   const s = await readAtt(env, key);
   const now = Date.now();
   const date = att.nyParts(now).date;
-  if (action === 'mark') {
-    if (!att.student(s, real)) throw new Error('This account is not on the class roster.');
-    const open = att.windowAt(s, now);
-    if (!open) throw new Error('Attendance is not open right now.');
-    // The first press sets self; a later press (also after the instructor set the student absent) makes the round present again.
-    await env.DB.prepare('INSERT INTO att_marks (class, round, email, self, present) VALUES (?, ?, ?, ?, 1) '
-      + 'ON CONFLICT (class, round, email) DO UPDATE SET self = COALESCE(self, excluded.self), present = 1')
-      .bind(key, open.id, real, new Date(now).toISOString()).run();
-  } else if (action === 'answer') {
-    if (!att.student(s, real)) throw new Error('This account is not on the class roster.');
-    const label = att.checkAnswer(s, args[0], args[1], now);
-    await env.DB.prepare('INSERT OR REPLACE INTO att_answers (class, qid, email, answer, time) VALUES (?, ?, ?, ?, ?)')
-      .bind(key, String(args[0]), real, label, new Date(now).toISOString()).run();
-  } else if (action !== 'state') throw new Error('Unknown action.');
+  try {
+    if (action === 'mark') {
+      if (!att.student(s, real)) throw new Error('This account is not on the class roster.');
+      const open = att.windowAt(s, now);
+      if (!open) throw new Error('Attendance is not open right now.');
+      // The first press sets self; a later press (also after the instructor set the student absent) makes the round present again.
+      const res = await env.DB.prepare('INSERT INTO att_marks (class, round, email, self, present) VALUES (?, ?, ?, ?, 1) '
+        + 'ON CONFLICT (class, round, email) DO UPDATE SET self = COALESCE(self, excluded.self), present = 1 WHERE present = 0')
+        .bind(key, open.id, real, new Date(now).toISOString()).run();
+      if (res.meta.changes) await attLog(env, key, real, 'present', 'round ' + open.id);
+    } else if (action === 'answer') {
+      if (!att.student(s, real)) throw new Error('This account is not on the class roster.');
+      const label = att.checkAnswer(s, args[0], args[1], now);
+      await env.DB.prepare('INSERT OR REPLACE INTO att_answers (class, qid, email, answer, time) VALUES (?, ?, ?, ?, ?)')
+        .bind(key, String(args[0]), real, label, new Date(now).toISOString()).run();
+      await attLog(env, key, real, 'answer', label + ' to question ' + args[0]);
+    } else if (action !== 'state') throw new Error('Unknown action.');
+  } catch (err) {
+    await attLog(env, key, real, 'refused: ' + action, err.message);
+    throw err;
+  }
   // The student's own marks of today's rounds (round ids start with the date).
   const marks = (await env.DB.prepare('SELECT round, COALESCE(self, edited) AS time FROM att_marks WHERE class = ? AND email = ? AND present = 1 AND round >= ? AND round < ?')
     .bind(key, real, date + ' ', date + '~').all()).results;
@@ -324,7 +334,23 @@ async function attStudentCall(env, real, action, key, args) {
   return att.studentView(s, real, marks, now, id => answers.find(a => a.qid === id) || null);
 }
 
+const ATT_READS = { whoami: 1, get: 1, log: 1 };
+
+/** Every instructor action except reads is logged (actor "email (instructor)"); a refused one is logged with its reason. */
 async function attAdminCall(env, real, action, key, args) {
+  const who = real + ' (instructor)';
+  try {
+    return await attAdminDo(env, real, who, action, key, args);
+  } catch (err) {
+    if (!ATT_READS[action]) {
+      const shown = args.map(a => (typeof a === 'string' ? a.slice(0, 200) : JSON.stringify(a).slice(0, 200)));
+      await attLog(env, key, who, 'refused: ' + action, shown.join(', ') + (shown.length ? ' | ' : '') + err.message);
+    }
+    throw err;
+  }
+}
+
+async function attAdminDo(env, real, who, action, key, args) {
   const now = Date.now();
   if (action === 'whoami') return { email: real, classes: await attClassList(env) };
 
@@ -336,6 +362,7 @@ async function attAdminCall(env, real, action, key, args) {
     const res = await env.DB.prepare('INSERT OR IGNORE INTO att_classes (key, state) VALUES (?, ?)')
       .bind(newKey, JSON.stringify(att.newAttClass(title, now))).run();
     if (res.meta.changes !== 1) throw new Error('A class with the key "' + newKey + '" exists.');
+    await attLog(env, newKey, who, 'create class', title);
     return { key: newKey, classes: await attClassList(env) };
   }
 
@@ -345,60 +372,114 @@ async function attAdminCall(env, real, action, key, args) {
     await env.DB.batch([
       env.DB.prepare('DELETE FROM att_classes WHERE key = ?').bind(key),
       env.DB.prepare('DELETE FROM att_marks WHERE class = ?').bind(key),
-      env.DB.prepare('DELETE FROM att_answers WHERE class = ?').bind(key)
+      env.DB.prepare('DELETE FROM att_answers WHERE class = ?').bind(key),
+      env.DB.prepare('DELETE FROM log WHERE class = ?').bind('att:' + key)
     ]);
     return { classes: await attClassList(env) };
   }
 
-  const s = await readAtt(env, key);
+  // The activity log: args = [search text, who: 'all' | 'instructor' | 'students', limit]. Newest first.
+  if (action === 'log') {
+    const like = '%' + String(args[0] || '').replace(/[%_]/g, '') + '%';
+    const whoFilter = args[1] === 'instructor' ? " AND actor LIKE '%(instructor)'" : args[1] === 'students' ? " AND actor NOT LIKE '%(instructor)'" : '';
+    const limit = Math.min(Math.max(Number(args[2]) || 500, 1), 20000);
+    const out = await env.DB.prepare('SELECT id, time, actor, action, detail FROM log WHERE class = ? AND (actor LIKE ? OR action LIKE ? OR detail LIKE ?)'
+      + whoFilter + ' ORDER BY id DESC LIMIT ?').bind('att:' + key, like, like, like, limit).all();
+    return { rows: out.results };
+  }
 
-  if (action === 'setMark') {
-    // Instructor override: present (true) or absent (false) for one student in one round.
-    const round = String(args[0] || ''), email = canonEmail(args[1]);
-    if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(round) || !email) throw new Error('A round and an email are needed.');
-    // The student's own mark (self) is kept, so the row records the manual change: present - (self set) is +1, -1, or 0.
+  const s = await readAtt(env, key);
+  const name = e => { const r = att.student(s, e); return r ? att.fullName(r) + ' (' + e + ')' : e; };
+  const logs = [];  // [action, detail] lines written after the change succeeds
+
+  if (action === 'setMark' || action === 'setMarks') {
+    // Instructor override: present (true) or absent (false) per student and round; setMarks takes a list of [round, email, present].
+    // Refused while a round is open, so that changes are made after the fact (the page saves them as a batch).
+    if (att.windowAt(s, now)) throw new Error('Attendance is open. Change marks after it closes.');
+    const list = action === 'setMark' ? [args] : (Array.isArray(args[0]) ? args[0] : []);
+    if (!list.length || list.length > 2000) throw new Error('No change to save.');
     const stamp = new Date(now).toISOString();
-    if (args[2]) {
-      await env.DB.prepare('INSERT INTO att_marks (class, round, email, present, edited, by) VALUES (?, ?, ?, 1, ?, ?) '
-        + 'ON CONFLICT (class, round, email) DO UPDATE SET present = 1, edited = excluded.edited, by = excluded.by')
-        .bind(key, round, email, stamp, real).run();
-    } else {
-      await env.DB.batch([
-        env.DB.prepare('UPDATE att_marks SET present = 0, edited = ?, by = ? WHERE class = ? AND round = ? AND email = ?').bind(stamp, real, key, round, email),
-        env.DB.prepare('DELETE FROM att_marks WHERE class = ? AND round = ? AND email = ? AND self IS NULL').bind(key, round, email)
-      ]);
-    }
+    const stmts = [];
+    list.forEach(a => {
+      const round = String(a[0] || ''), email = canonEmail(a[1]);
+      if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(round) || !email) throw new Error('A round and an email are needed.');
+      // The student's own mark (self) is kept, so the row records the manual change: present - (self set) is +1, -1, or 0.
+      if (a[2]) {
+        stmts.push(env.DB.prepare('INSERT INTO att_marks (class, round, email, present, edited, by) VALUES (?, ?, ?, 1, ?, ?) '
+          + 'ON CONFLICT (class, round, email) DO UPDATE SET present = 1, edited = excluded.edited, by = excluded.by')
+          .bind(key, round, email, stamp, real));
+      } else {
+        stmts.push(env.DB.prepare('UPDATE att_marks SET present = 0, edited = ?, by = ? WHERE class = ? AND round = ? AND email = ?').bind(stamp, real, key, round, email),
+          env.DB.prepare('DELETE FROM att_marks WHERE class = ? AND round = ? AND email = ? AND self IS NULL').bind(key, round, email));
+      }
+      logs.push([a[2] ? 'set present' : 'set absent', name(email) + ', round ' + round]);
+    });
+    await env.DB.batch(stmts);
   } else if (action === 'openNow') {
+    const before = att.windowAt(s, now);
     att.ADMIN.openNow(s, args[0], now);
+    const open = att.windowAt(s, now);
     await writeAtt(env, key, s);
+    logs.push(['open now', 'round ' + open.id + ', until ' + open.close + (before ? ' (round ' + before.id + ' closed)' : '')]);
   } else if (action === 'closeNow') {
+    const open = att.windowAt(s, now);
     att.ADMIN.closeNow(s, now);
     await writeAtt(env, key, s);
+    logs.push(['close now', 'round ' + open.id + ', closed at ' + s.closed[open.id]]);
   } else if (action === 'askQuestion') {
-    att.ADMIN.askQuestion(s, args[0], args[1], args[2], args[3], args[4], now);
+    const q = att.ADMIN.askQuestion(s, args[0], args[1], args[2], args[3], args[4], now);
     await writeAtt(env, key, s);
+    logs.push(['ask question', q.id + ' (' + q.kind + (q.kind === 'mc' ? ' ' + q.n : '') + ') for ' + args[4] + ' min' + (q.text ? ': ' + q.text.slice(0, 100) : '')]);
   } else if (action === 'closeQuestion') {
     att.ADMIN.closeQuestion(s, args[0], now);
     await writeAtt(env, key, s);
+    logs.push(['close question', String(args[0])]);
   } else if (action === 'extendQuestion') {
     att.ADMIN.extendQuestion(s, args[0], args[1], now);
     await writeAtt(env, key, s);
+    logs.push(['extend question', args[0] + ' by ' + args[1] + ' min']);
   } else if (action === 'deleteQuestion') {
     att.ADMIN.deleteQuestion(s, args[0]);
     await env.DB.batch([
       env.DB.prepare('UPDATE att_classes SET state = ? WHERE key = ?').bind(JSON.stringify(s), key),
       env.DB.prepare('DELETE FROM att_answers WHERE class = ? AND qid = ?').bind(key, String(args[0]))
     ]);
+    logs.push(['delete question', String(args[0])]);
+  } else if (action === 'importRoster') {
+    const before = s.roster.map(r => r.email);
+    att.ADMIN.importRoster(s, args[0]);
+    await writeAtt(env, key, s);
+    const after = s.roster.map(r => r.email);
+    logs.push(['import roster', after.length + ' students; added: ' + (after.filter(e => before.indexOf(e) === -1).join(', ') || 'none')
+      + '; dropped: ' + (before.filter(e => after.indexOf(e) === -1).join(', ') || 'none')]);
+  } else if (action === 'saveSettings') {
+    const before = JSON.stringify({ t: s.title, sch: s.schedule, skip: s.skip, p: s.points });
+    att.ADMIN.saveSettings(s, args[0]);
+    await writeAtt(env, key, s);
+    const after = JSON.stringify({ t: s.title, sch: s.schedule, skip: s.skip, p: s.points });
+    if (after !== before) logs.push(['save settings', after]);
   } else if (Object.prototype.hasOwnProperty.call(att.ADMIN, action)) {
+    const before = s.roster.slice();
+    const removed = action === 'removeStudent' ? name(canonEmail(args[0])) : '';
     att.ADMIN[action](s, ...args);
     await writeAtt(env, key, s);
+    const added = s.roster.filter(r => before.indexOf(r) === -1).map(r => name(r.email)).join(', ');
+    const detail = { addExtra: 'window ' + args[0] + ' ' + args[1] + ' to ' + args[2], removeExtra: 'window ' + args[0] + ' ' + (args[1] || ''),
+                     addStudent: added, removeStudent: removed, setCorrect: args[0] + ': ' + (args[1] || 'none') };
+    logs.push([action.replace(/([A-Z])/g, c => ' ' + c.toLowerCase()), action in detail ? detail[action] : args.join(', ')]);
   } else if (action !== 'get') throw new Error('Unknown action.');
+
+  if (logs.length) {
+    const time = new Date().toISOString();
+    await env.DB.batch(logs.map(l => env.DB.prepare(LOG_SQL + 'VALUES (?, ?, ?, ?, ?)').bind(time, 'att:' + key, who, l[0], String(l[1]).slice(0, 2000))));
+  }
 
   const marks = (await env.DB.prepare('SELECT round, email, self, present, edited, by FROM att_marks WHERE class = ? ORDER BY round, email').bind(key).all()).results;
   const ids = marks.map(m => m.round).filter((d, i, a) => a.indexOf(d) === i);
   const answers = s.questions.length
     ? (await env.DB.prepare('SELECT qid, email, answer, time FROM att_answers WHERE class = ?').bind(key).all()).results : [];
-  return { state: s, marks: marks, answers: answers, rounds: att.rounds(s, ids, now), today: att.nyParts(now).date,
+  const roundsList = att.rounds(s, ids, now);
+  return { state: s, marks: marks, answers: answers, rounds: roundsList, today: att.nyParts(now).date,
            open: att.windowAt(s, now), next: att.nextWindow(s, now), now: new Date(now).toISOString(),
-           question: att.openQuestion(s, now) };
+           question: att.openQuestion(s, now), report: att.report(s, roundsList, marks, now) };
 }

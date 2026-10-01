@@ -12,6 +12,8 @@
  *   closed     {round id: 'HH:MM'}  windows closed early ("close now", or superseded by "open now")
  *   questions  [{id, kind: 'tf' | 'yn' | 'mc', n, text, correct, opened, closes}]  in-class questions, oldest first;
  *              times are ISO instants; a question is open while now < closes. Answers are rows of att_answers.
+ *   points     {mode: 'per' | 'total', value}  attendance points: per session, or a total divided equally
+ *              among all sessions of the semester (see sessionDates and report)
  * All clock times are New York local time. Every window is one attendance round, identified by
  * 'YYYY-MM-DD HH:MM' (its date and opening time); marks are rows of att_marks keyed by round and
  * email, so a day with three windows has three rounds and three columns in the grid.
@@ -45,7 +47,8 @@ export const DEFAULT_SKIP = ['2026-10-06', '2026-10-20', '2026-10-22', '2026-11-
 
 export function newAttClass(title, nowMs) {
   return { title: title, createdAt: nyParts(nowMs).date, roster: [],
-           schedule: Object.assign({}, DEFAULT_SCHEDULE), skip: DEFAULT_SKIP.slice(), extra: [], closed: {}, questions: [] };
+           schedule: Object.assign({}, DEFAULT_SCHEDULE), skip: DEFAULT_SKIP.slice(), extra: [], closed: {}, questions: [],
+           points: { mode: 'total', value: 0 } };
 }
 
 const hhmm = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
@@ -153,6 +156,67 @@ export function rounds(s, markRounds, ms) {
   return Object.keys(set).sort().map(id => set[id]);
 }
 
+/**
+ * Every class session of the semester, past and future, as sorted dates: the scheduled days from the
+ * first to the last class day (minus the no-class days), the dates of one-off windows, and the dates
+ * of rounds that have marks. Without a last class day the schedule is walked through today or the
+ * latest round, whichever is later. Points are divided among these dates.
+ */
+export function sessionDates(s, markRounds, ms) {
+  const now = nyParts(ms);
+  const set = {};
+  markRounds.forEach(id => { set[id.slice(0, 10)] = true; });
+  s.extra.forEach(x => { set[x.date] = true; });
+  const first = s.schedule.start || s.createdAt || now.date;
+  const last = s.schedule.end || Object.keys(set).concat([now.date]).sort().pop();
+  const t0 = Date.parse(first + 'T12:00:00Z');
+  if (!isNaN(t0)) {
+    for (let k = 0; k < 370; k++) {
+      const d = new Date(t0 + k * 86400000).toISOString().slice(0, 10);
+      if (d > last) break;
+      if (windowsOn(s, d, new Date(t0 + k * 86400000).getUTCDay()).some(w => !w.extra)) set[d] = true;
+    }
+  }
+  return Object.keys(set).sort();
+}
+
+/**
+ * Attendance counts and points. roundsList: rounds() output; marks: [{round, email, present}].
+ * Points per session: points.value in mode 'per', or points.value / number of sessions in mode 'total'.
+ * A session's points are split equally among its rounds; a student earns a round's share when present.
+ * Returns {dates, perSession, total, sessions: [{date, rounds: [{id, open, present}], points, opened}],
+ *          students: {email: {present, rounds, points, possible}}} where rounds counts the rounds that
+ * have opened, possible the points of the sessions that have opened, and total the semester's points.
+ */
+export function report(s, roundsList, marks, ms) {
+  const dates = sessionDates(s, roundsList.map(x => x.id), ms);
+  const n = dates.length;
+  const pts = s.points || { mode: 'total', value: 0 };
+  const perSession = pts.mode === 'total' ? (n ? pts.value / n : 0) : pts.value;
+  const byDate = {};
+  dates.forEach(d => { byDate[d] = { date: d, rounds: [], points: perSession, opened: false }; });
+  roundsList.forEach(x => {
+    if (!byDate[x.date]) return;  // a round on a date that is not a session (cannot happen: mark rounds are sessions)
+    byDate[x.date].rounds.push({ id: x.id, open: x.open, present: 0 });
+    byDate[x.date].opened = true;
+  });
+  const share = {};  // round id -> points
+  Object.keys(byDate).forEach(d => { byDate[d].rounds.forEach(r => { share[r.id] = perSession / byDate[d].rounds.length; }); });
+  const students = {};
+  s.roster.forEach(r => { students[r.email] = { present: 0, rounds: roundsList.length, points: 0, possible: 0 }; });
+  const possible = dates.filter(d => byDate[d].opened).length * perSession;
+  Object.keys(students).forEach(e => { students[e].possible = possible; });
+  marks.forEach(m => {
+    if (!m.present || !(m.round in share)) return;
+    const d = m.round.slice(0, 10);
+    const st = students[m.email];
+    if (!st) return;  // a student no longer on the roster
+    byDate[d].rounds.find(x => x.id === m.round).present++;
+    st.present++; st.points += share[m.round];
+  });
+  return { dates: dates, perSession: perSession, total: perSession * n, sessions: dates.map(d => byDate[d]), students: students };
+}
+
 export function student(s, email) { return s.roster.find(r => r.email === canonEmail(email)) || null; }
 export const fullName = r => (r.first + ' ' + r.last).trim();
 
@@ -206,9 +270,14 @@ export const ADMIN = {
     const skip = String(v.skip || '').split(/[\s,;]+/).map(text).filter(Boolean);
     const badSkip = skip.find(d => !isDate(d));
     if (badSkip) throw new Error('"' + badSkip + '" is not a date (YYYY-MM-DD).');
+    const old = s.points || { mode: 'total', value: 0 };
+    const mode = v.pointsMode === undefined ? old.mode : (v.pointsMode === 'per' ? 'per' : 'total');
+    const value = Number(v.points === undefined || v.points === '' ? old.value : v.points);
+    if (!(value >= 0 && value <= 1000)) throw new Error('Attendance points must be a number from 0 to 1000.');
     s.title = title;
     s.schedule = { days: days.sort(), open: open, close: close, start: start, end: end };
     s.skip = skip.filter((d, i) => skip.indexOf(d) === i).sort();
+    s.points = { mode: mode, value: value };
   },
 
   /** A one-off window (a new round) on one date, for a moved class or "open now". Replaces an extra window with the same opening time. */
@@ -341,6 +410,7 @@ function sortRoster(s) {
 export function upgradeAtt(s) {
   s.roster = s.roster || []; s.skip = s.skip || []; s.extra = s.extra || []; s.questions = s.questions || []; s.closed = s.closed || {};
   s.schedule = Object.assign({}, DEFAULT_SCHEDULE, s.schedule || {});
+  s.points = Object.assign({ mode: 'total', value: 0 }, s.points || {});
   delete s.sessions; delete s.cutoff;
   return s;
 }

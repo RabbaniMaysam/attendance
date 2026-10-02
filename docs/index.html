@@ -164,7 +164,8 @@
     var box = document.getElementById('signin');
     app.innerHTML = '';
     app.appendChild(el('h1', { text: conf.title }));
-    app.appendChild(el('p', { class: 'muted', text: 'Sign in with the Google account of the email address your instructor has on file.' }));
+    app.appendChild(el('p', { class: 'muted', text: 'Sign in with the Google account of the email address your instructor has on file (your university account, not a personal Gmail).' }));
+    app.appendChild(el('p', { class: 'muted', text: 'If the sign-in box shows only a personal account, choose "Use another account" and sign in with your university email. You sign in once; this browser stays signed in afterwards.' }));
     box.hidden = false;
     box.innerHTML = '';
     whenGoogleReady(function () {

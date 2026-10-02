@@ -94,7 +94,7 @@
     .qrstatus { font-size: 22px; margin: 0 0 6px; color: var(--ok); }
     .qrcode { font-size: 44px; font-weight: 700; margin: 6px 0; letter-spacing: 4px; }
     .qrcode small { font-size: 22px; font-weight: 500; letter-spacing: 0; color: var(--muted); margin-right: 12px; }
-    /* the bar beside the session code: full when a new code appears, empty when it changes (10 seconds) */
+    /* the bar beside the session code: full when a new code appears, empty when it changes (6 seconds) */
     .codebar { display: inline-block; width: 140px; height: 14px; margin-left: 16px; vertical-align: middle; border-radius: 7px; background: #e3e7ec; overflow: hidden; }
     .codebar div { height: 100%; background: var(--accent); border-radius: 7px; }
   </style>
@@ -149,8 +149,8 @@
   function setD(d) { D = d; if (d && d.now) clockOffset = Date.parse(d.now) - Date.now(); }
   function serverNow() { return Date.now() + clockOffset; }
 
-  // The session code: a copy of sessionCode in worker/src/attendance.js (cyrb53 hash of the class's secret and the 10-second slot).
-  var CODE_MS = 10000;
+  // The session code: a copy of sessionCode in worker/src/attendance.js (cyrb53 hash of the class's secret and the 6-second slot).
+  var CODE_MS = 6000;
   function sessionCode(secret, slot) {
     var str = String(secret || '') + '|' + slot, h1 = 0xdeadbeef, h2 = 0x41c6ce57;
     for (var i = 0; i < str.length; i++) {
@@ -407,14 +407,14 @@
 
   /**
    * The session code line, shown wherever the QR code is: "Session code 1224" and a bar that empties over the
-   * code's 10 seconds and refills when the next code appears. Updates itself ten times a second until removed.
+   * code's 6 seconds and refills when the next code appears. Updates itself ten times a second until removed.
    * Shown whether or not a round is open (the code is only checked while one is).
    */
   function codeLine(cls) {
     var e = el('p', { class: cls });
     if (!D || !D.state.code) return e;
     var num = document.createTextNode(''), bar = el('div'), slot = -1, shown = false;
-    e.appendChild(el('small', { text: 'Session code' })); e.appendChild(num); e.appendChild(el('span', { class: 'codebar', title: 'The code changes every 10 seconds.' }, bar));
+    e.appendChild(el('small', { text: 'Session code' })); e.appendChild(num); e.appendChild(el('span', { class: 'codebar', title: 'The code changes every 6 seconds.' }, bar));
     var tick = function () {
       // The element is created before it is put on the page; stop ticking once it has been on the page and is removed.
       if (document.contains(e)) shown = true;
@@ -487,7 +487,7 @@
   function qrTab(card) {
     card.appendChild(liveStatus('banner ' + (D.open ? 'ok' : 'note')));
     card.appendChild(el('div', { class: 'row', style: 'margin-top:12px' }, button('Open in a new tab', '', showQr),
-      el('span', { class: 'muted', text: 'Opens a tab with the QR code, the link, the session code, and the live status: drag it to the projector screen (F11 for full screen) and keep this tab on your monitor. Every tab opened this way shows the same QR code and session code; it works during attendance and questions alike.' + (D.state.code ? ' The session code changes every 10 seconds (the bar shows the time left); students type the code on the screen, and may retry until attendance closes.' : '') })));
+      el('span', { class: 'muted', text: 'Opens a tab with the QR code, the link, the session code, and the live status: drag it to the projector screen (F11 for full screen) and keep this tab on your monitor. Every tab opened this way shows the same QR code and session code; it works during attendance and questions alike.' + (D.state.code ? ' The session code changes every 6 seconds (the bar shows the time left); students type the code on the screen, and may retry until attendance closes.' : '') })));
     var holder = el('div', { style: 'text-align:center; margin-top:8px' });
     card.appendChild(holder);
     withQr(function () {
@@ -890,7 +890,7 @@
       el('dt', { text: 'Last class day' }), el('dd', {}, end, ' ', el('span', { class: 'muted', text: 'optional; no windows after it' })),
       el('dt', { text: 'No class on' }), el('dd', {}, skip, el('div', { class: 'muted', text: 'One date per line, YYYY-MM-DD (holidays, cancelled classes). No window opens on these days and they are not sessions. A day that did have a window but should not count is excluded instead ("Exclude dates" on the Attendance tab, or the Reports tab).' })),
       el('dt', { text: 'Session code' }), el('dd', {}, el('label', {}, codeCb, 'students must type the 4-digit session code'),
-        el('div', { class: 'muted', text: 'The code is shown with the QR code (QR code tab and full screen) and changes every 10 seconds, so a code relayed to someone outside the room is stale by the time it arrives. A code is accepted for 10 to 20 seconds after it appears; a wrong code can be retried without limit.' }))));
+        el('div', { class: 'muted', text: 'The code is shown with the QR code (QR code tab and full screen) and changes every 6 seconds, so a code relayed to someone outside the room is stale by the time it arrives. A code is accepted for 6 to 12 seconds after it appears; a wrong code can be retried without limit.' }))));
     card.appendChild(el('h2', { text: 'Attendance points', style: 'margin-top:18px' }));
     card.appendChild(el('dl', {},
       el('dt', { text: 'Points' }), el('dd', {}, pval, ' ', pmode),

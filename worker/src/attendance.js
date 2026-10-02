@@ -70,13 +70,13 @@ export function randomSecret() {
 
 /**
  * The 4-digit session code shown with the QR code and typed by students. It changes every CODE_MS
- * (10 s), like a two-step verification code: a hash of the class's secret and the 10-second slot,
+ * (6 s), like a two-step verification code: a hash of the class's secret and the 6-second slot,
  * so it cannot be guessed from earlier codes and is hard to relay to someone outside the room.
  * The instructor page computes it with a copy of this function (it receives the secret and the
  * server clock); the Worker accepts the current slot and the previous one, so a code is valid for
- * 10 to 20 seconds after it appears (typing takes a few seconds). (cyrb53 hash.)
+ * 6 to 12 seconds after it appears (typing takes a few seconds; a wrong code can be retried). (cyrb53 hash.)
  */
-export const CODE_MS = 10000;
+export const CODE_MS = 6000;
 export const codeSlot = ms => Math.floor(ms / CODE_MS);
 export function sessionCode(s, slot) {
   const str = String(s.secret || '') + '|' + slot;
@@ -311,7 +311,7 @@ export function checkCode(s, code, nowMs) {
   if (!s.code) return;
   const typed = String(code ?? '').trim(), slot = codeSlot(nowMs);
   if (typed !== sessionCode(s, slot) && typed !== sessionCode(s, slot - 1)) {
-    throw new Error('Wrong session code. The code changes every 10 seconds: type the one on the screen now.');
+    throw new Error('Wrong session code. The code changes every 6 seconds: type the one on the screen now.');
   }
 }
 

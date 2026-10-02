@@ -273,9 +273,9 @@ ok(att.windowAt(g, edt('2026-09-16', '23:58')).close === '23:59', 'an extension 
 att.ADMIN.removeExtra(g, '2026-09-16', '23:57');
 ok(!('2026-09-16 23:57' in g.extended), 'removing the window drops its extension');
 
-// ---- session codes: 4 digits, one per 10-second slot, different between slots and classes, off when the setting is off
-const slot = att.codeSlot(during);
-ok(att.CODE_MS === 10000 && slot === Math.floor(during / 10000) && att.codeSlot(during + 9999) === slot && att.codeSlot(during + 10000) === slot + 1, 'a slot is 10 seconds');
+// ---- session codes: 4 digits, one per 6-second slot, different between slots and classes, off when the setting is off
+const slot = att.codeSlot(during), SL = att.CODE_MS;
+ok(SL === 6000 && slot === Math.floor(during / 6000) && att.codeSlot(during + 5999) === slot && att.codeSlot(during + 6000) === slot + 1, 'a slot is 6 seconds');
 const c1 = att.sessionCode(g, slot);
 ok(/^\d{4}$/.test(c1) && c1 === att.sessionCode(g, slot), 'a 4-digit code, the same on every call: ' + c1);
 const many = [0, 1, 2, 3, 4, 5].map(k => att.sessionCode(g, slot + k));
@@ -288,11 +288,11 @@ ok(att.studentView(g, 'a@x.edu', [], during).needCode === true, 'the student vie
 throws(() => att.checkCode(g, '0000' === c1 ? '0001' : '0000', during), /Wrong session code/, 'a wrong code is refused');
 throws(() => att.checkCode(g, '', during), /Wrong session code/, 'an empty code is refused');
 att.checkCode(g, ' ' + c1 + ' ', during);
-att.checkCode(g, c1, during + 9999);
+att.checkCode(g, c1, during + SL - 1 - (during % SL));
 ok(true, 'the right code passes (spaces ignored) throughout its slot');
-att.checkCode(g, c1, during + 19999 - (during % 10000));
+att.checkCode(g, c1, during + 2 * SL - 1 - (during % SL));
 ok(true, 'and during the next slot (typing takes a few seconds)');
-throws(() => att.checkCode(g, c1, during + 20000), /Wrong session code/, 'but not two slots later');
+throws(() => att.checkCode(g, c1, during + 2 * SL - (during % SL)), /Wrong session code/, 'but not two slots later');
 throws(() => att.checkCode(g, att.sessionCode(g, slot + 1), during), /Wrong session code/, 'a code from the future is refused');
 att.ADMIN.saveSettings(g, { title: 'ECON 102', days: [2, 4], open: '07:50', close: '08:05', start: '2026-09-01', end: '2026-09-29', skip: '2026-09-08', code: false });
 att.checkCode(g, '', during);

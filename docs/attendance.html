@@ -237,7 +237,7 @@
         code.value = codeDraft;
         code.addEventListener('input', function () { codeDraft = code.value.replace(/\D/g, '').slice(0, 4); code.value = codeDraft; });
         code.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') mark(); });
-        card.appendChild(el('p', { class: 'codelabel', text: 'Session code (on the screen, next to the QR code; it changes every 10 seconds):' }));
+        card.appendChild(el('p', { class: 'codelabel', text: 'Session code (on the screen, next to the QR code; it changes every 6 seconds):' }));
         card.appendChild(code);
         if (hadFocus) setTimeout(function () { code.focus(); code.setSelectionRange(code.value.length, code.value.length); }, 0);
       }

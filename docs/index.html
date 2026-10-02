@@ -95,6 +95,7 @@
   var expanded = {};  // tiles on the group card that are open: {dataset: true, topic: true}
   // The token is kept in localStorage: the Worker's session token (sent after a Google sign-in) lasts months. "Sign out" deletes it.
   try { token = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY) || ''; } catch (e) {}
+  tokenFromHash();
 
   // ---------------------------------------------------------------- plumbing
 
@@ -164,13 +165,41 @@
     var box = document.getElementById('signin');
     app.innerHTML = '';
     app.appendChild(el('h1', { text: conf.title }));
-    app.appendChild(el('p', { class: 'muted', text: 'Sign in with the Google account of the email address your instructor has on file (your university account, not a personal Gmail).' }));
-    app.appendChild(el('p', { class: 'muted', text: 'If the sign-in box shows only a personal account, choose "Use another account" and sign in with your university email. You sign in once; this browser stays signed in afterwards.' }));
+    app.appendChild(el('p', { class: 'muted', text: 'Sign in with the Google account of the email address your instructor has on file (your university account, not a personal Gmail). You sign in once; this browser stays signed in afterwards.' }));
     box.hidden = false;
     box.innerHTML = '';
     whenGoogleReady(function () {
       google.accounts.id.renderButton(box, { theme: 'outline', size: 'large', text: 'signin_with' });
     });
+    box.appendChild(el('p', { class: 'muted', style: 'margin-top:14px' }, 'Signed in to a personal account on this phone or computer? ',
+      el('button', { class: 'link', text: 'Choose or add the university account', on: { click: chooseAccount } }), '.'));
+  }
+
+  /**
+   * Google's account chooser in this tab, for a browser whose only Google account is the wrong one: the
+   * "Sign in with Google" button then signs in with that account without asking. Google returns to this
+   * page with the ID token in the URL fragment (tokenFromHash); the page's address must be registered as
+   * an authorized redirect URI of the client ID.
+   */
+  function chooseAccount() {
+    var nonce = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    try { sessionStorage.setItem('signin_nonce', nonce); } catch (e) {}
+    location.href = 'https://accounts.google.com/o/oauth2/v2/auth?' + new URLSearchParams({
+      client_id: conf.clientId, redirect_uri: location.origin + location.pathname, response_type: 'id_token',
+      scope: 'openid email', nonce: nonce, prompt: 'select_account', state: classKey }).toString();
+  }
+
+  function tokenFromHash() {
+    var h = new URLSearchParams(location.hash.replace(/^#/, ''));
+    var t = h.get('id_token');
+    if (!t) return;
+    var nonce = '';
+    try { nonce = sessionStorage.getItem('signin_nonce') || ''; sessionStorage.removeItem('signin_nonce'); } catch (e) {}
+    var p = {};
+    try { var b = t.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'); p = JSON.parse(atob(b + '==='.slice(0, (4 - b.length % 4) % 4))); } catch (e) {}
+    if (!classKey) classKey = h.get('state') || '';
+    if (nonce && p.nonce === nonce) setToken(t);
+    history.replaceState(null, '', location.pathname + (classKey ? '?c=' + encodeURIComponent(classKey) : ''));
   }
 
   function signOut() {

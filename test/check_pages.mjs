@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 
 const PAGES = ['index.html', 'admin.html', 'attendance.html', 'attendance_admin.html'];
 const BROWSER = ['window', 'document', 'location', 'history', 'navigator', 'fetch', 'sessionStorage', 'localStorage', 'setTimeout', 'clearTimeout',
-  'setInterval', 'clearInterval', 'requestAnimationFrame', 'Intl', 'Promise', 'FileReader', 'Blob', 'URL', 'URLSearchParams', 'google',
+  'setInterval', 'clearInterval', 'requestAnimationFrame', 'Intl', 'Promise', 'FileReader', 'Blob', 'URL', 'URLSearchParams', 'google', 'atob',
   'encodeURIComponent', 'decodeURIComponent', 'console', 'Date', 'JSON', 'Math', 'Number', 'String', 'Object', 'Array', 'Error', 'isNaN',
   'alert', 'confirm', 'prompt'];
 

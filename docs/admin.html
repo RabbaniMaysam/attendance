@@ -110,7 +110,7 @@
       .then(function (out) {
         if (out.session) setToken(out.session);
         if (out.ok) return out.data;
-        if (out.error === 'SIGNIN') { setToken(''); showSignIn(); throw new Error('SIGNIN'); }
+        if (out.error === 'SIGNIN') { var why = token.indexOf('s1.') === 0 ? 'session' : 'google'; setToken(''); showSignIn(why); throw new Error('SIGNIN'); }
         throw new Error(out.error);
       });
   }
@@ -170,11 +170,19 @@
     else setTimeout(function () { whenGoogleReady(fn); }, 100);
   }
 
-  function showSignIn() {
+  // Why the sign-in screen is shown, for diagnosing a sign-in that does not persist.
+  var SIGNIN_WHY = {
+    none: 'Why this screen: this browser had no saved sign-in (a first visit in this browser or profile, a private window, or a browser that deletes site data).',
+    google: 'Why this screen: the saved sign-in was Google\'s one-hour sign-in and it expired.',
+    session: 'Why this screen: the server refused the saved 180-day sign-in.'
+  };
+
+  function showSignIn(why) {
     var app = document.getElementById('app'), box = document.getElementById('signin');
     app.innerHTML = '';
     app.appendChild(el('h1', { text: 'Group sign-up: instructor page' }));
     app.appendChild(el('p', { class: 'muted', text: 'Sign in with an instructor account.' }));
+    if (SIGNIN_WHY[why]) app.appendChild(el('p', { class: 'muted', text: SIGNIN_WHY[why] }));
     box.hidden = false; box.innerHTML = '';
     whenGoogleReady(function () { google.accounts.id.renderButton(box, { theme: 'outline', size: 'large', text: 'signin_with' }); });
   }
@@ -201,7 +209,7 @@
           start();
         } });
       });
-      if (token) start(); else showSignIn();
+      if (token) start(); else showSignIn('none');
     }).catch(function () {
       app.innerHTML = '';
       app.appendChild(el('div', { class: 'banner err', text: 'The sign-up service did not respond. Reload the page in a minute.' }));

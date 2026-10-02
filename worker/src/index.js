@@ -42,7 +42,8 @@ export default {
         return json({ version: row ? row.version : -1 });
       }
       if (request.method === 'GET' && path === '/att/config') {
-        return json({ clientId: env.GOOGLE_CLIENT_ID || '', classes: await attClassList(env) });
+        // "sessions" says whether the SESSION_SECRET secret is set (without it every sign-in lasts one hour).
+        return json({ clientId: env.GOOGLE_CLIENT_ID || '', classes: await attClassList(env), sessions: !!env.SESSION_SECRET });
       }
       if (request.method === 'POST' && (path === '/' || path === '/admin' || path === '/att' || path === '/att/admin')) {
         const body = await request.text();

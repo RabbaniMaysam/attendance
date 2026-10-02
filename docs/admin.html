@@ -71,7 +71,8 @@
   var TABS = ['Overview', 'Roster', 'Groups', 'Datasets', 'Topics', 'Log', 'History'];
   var token = '', me = '', classes = [], cur = '', C = null, tab = 'Overview';
   var flash = null, busy = false, logRows = null, logSearch = '', snapRows = null;
-  try { token = sessionStorage.getItem(TOKEN_KEY) || ''; cur = sessionStorage.getItem('signup_admin_class') || ''; } catch (e) {}
+  // The token is kept in localStorage: the Worker's session token (sent after a Google sign-in) lasts months. "Sign out" deletes it.
+  try { token = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY) || ''; cur = sessionStorage.getItem('signup_admin_class') || ''; } catch (e) {}
 
   // ---------------------------------------------------------------- plumbing
 
@@ -93,7 +94,7 @@
 
   function setToken(t) {
     token = t || '';
-    try { token ? sessionStorage.setItem(TOKEN_KEY, token) : sessionStorage.removeItem(TOKEN_KEY); } catch (e) {}
+    try { token ? localStorage.setItem(TOKEN_KEY, token) : localStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(TOKEN_KEY); } catch (e) {}
   }
 
   function setClass(key) {
@@ -107,6 +108,7 @@
       body: JSON.stringify({ token: token, class: key === undefined ? cur : key, action: action, args: args || [] }) })
       .then(function (r) { return r.json(); })
       .then(function (out) {
+        if (out.session) setToken(out.session);
         if (out.ok) return out.data;
         if (out.error === 'SIGNIN') { setToken(''); showSignIn(); throw new Error('SIGNIN'); }
         throw new Error(out.error);

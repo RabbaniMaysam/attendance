@@ -3,7 +3,7 @@
 //
 //   cd worker
 //   npx wrangler d1 execute group-signup --local --file schema.sql
-//   npx wrangler dev --port 8791 --var GOOGLE_CLIENT_ID:test-client --var ADMIN_EMAILS:prof@gmail.com --var GOOGLE_CERTS_URL:http://127.0.0.1:8799/certs
+//   npx wrangler dev --port 8791 --var GOOGLE_CLIENT_ID:test-client --var ADMIN_EMAILS:prof@gmail.com --var GOOGLE_CERTS_URL:http://127.0.0.1:8799/certs --var SESSION_SECRET:test-secret
 //   node ../test/test_worker.mjs        (in a second terminal)
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -67,6 +67,22 @@ const N = 30;
 r = await adm('importRoster', ['first,last,email\n' + Array.from({ length: N }, (_, i) => `F${i},L${i},${m(i)}`).join('\n')]);
 ok(r.ok && r.data.state.roster.length === N, 'roster import');
 ok((await stu(99, 'state')).state.authorized === false, 'account outside the roster is blocked');
+
+// session tokens: issued after a Google sign-in, accepted afterwards, forgeries refused
+r = await stu(1, 'state');
+const sess = r.session;
+ok(r.ok && typeof sess === 'string' && /^s1\.[\w-]+\.[\w-]+$/.test(sess), 'a Google sign-in answer carries a session token');
+r = await post('/', { token: sess, class: KEY, action: 'state' });
+ok(r.ok && r.state.email === m(1) && r.state.authorized === true && !('session' in r), 'the session token signs the student in (and is not reissued)');
+const sp = sess.split('.');
+const sPayload = JSON.parse(Buffer.from(sp[1], 'base64url').toString());
+ok(sPayload.e === m(1) && sPayload.x > Date.now() + 170 * 86400000 && sPayload.x < Date.now() + 190 * 86400000, 'the session token names the account and lasts about 180 days');
+await bad('s1.' + Buffer.from(JSON.stringify({ e: 'prof@gmail.com', x: sPayload.x })).toString('base64url') + '.' + sp[2], 'session token with an altered account');
+await bad('s1.' + Buffer.from(JSON.stringify({ e: m(1), x: Date.now() - 1000 })).toString('base64url') + '.' + sp[2], 'expired session token');
+await bad(sp[0] + '.' + sp[1] + '.' + sp[2].slice(0, -2) + 'AA', 'session token with a bad signature');
+ok(/not an instructor/.test((await post('/admin', { token: sess, class: KEY, action: 'whoami' })).error), 'a student session cannot use the instructor API');
+r = await adm('whoami');
+ok(r.ok && r.session && (await post('/admin', { token: r.session, class: KEY, action: 'whoami' })).ok, 'the instructor gets a session token that works on the instructor API');
 ok(/does not match any class/.test((await post('/', { token: token(m(1)), class: 'nope', action: 'state' })).error), 'unknown class');
 
 // ten students create groups at the same moment: ten distinct groups

@@ -53,7 +53,7 @@ The student page is a lobby: it stays open during class and refreshes itself (ev
 
 ## Sign-in
 
-The pages use the "Sign in with Google" button. The Worker verifies Google's signature on each sign-in token and that the token was issued for this tool's client ID. The client ID is a public identifier created once in Google Cloud Console (type "Web application", with the page's origin, for example `https://USERNAME.github.io`, under "Authorized JavaScript origins"). It is the value of `GOOGLE_CLIENT_ID` in `worker/wrangler.toml`. The tool holds no permission on any Google account.
+The pages use the "Sign in with Google" button. The Worker verifies Google's signature on the sign-in token and that the token was issued for this tool's client ID, then answers with a session token of its own (signed with the `SESSION_SECRET` secret, valid 180 days), which the page keeps in the browser's storage and sends from then on, so a student signs in with Google once a semester per browser and later only opens the link; "Sign out" deletes the token. Without the secret, the pages fall back to Google's token, which lasts an hour. Changing the secret signs every browser out. The client ID is a public identifier created once in Google Cloud Console (type "Web application", with the page's origin, for example `https://USERNAME.github.io`, under "Authorized JavaScript origins"). It is the value of `GOOGLE_CLIENT_ID` in `worker/wrangler.toml`. The tool holds no permission on any Google account.
 
 ## Deployment
 
@@ -63,6 +63,7 @@ From `worker/`, with a Cloudflare account:
 npx wrangler d1 create group-signup          # once; copy the database_id into wrangler.toml
 npx wrangler d1 execute group-signup --remote --file schema.sql
 npx wrangler secret put ADMIN_EMAILS         # comma-separated instructor emails
+npx wrangler secret put SESSION_SECRET       # any long random string (signs the session tokens)
 npx wrangler deploy
 ```
 

@@ -48,18 +48,24 @@ export default {
         const body = await request.text();
         if (body.length > 1000000) throw new Error('The request is too large.');
         const req = JSON.parse(body);
-        const real = await verify(req.token, env);
+        const who = await verify(req.token, env);
+        const real = who.email;
         const admin = isAdmin(real, env);
         const args = Array.isArray(req.args) ? req.args.slice(0, 8) : [];
         const key = String(req.class || '');
         const action = String(req.action);
+        // After a Google sign-in the answer carries a session token of this tool, which the page keeps
+        // for the following visits (Google's own token lasts an hour and the page cannot renew it silently).
+        const session = who.google ? await sessionToken(real, env) : '';
+        let out;
         if (path === '/admin' || path === '/att/admin') {
           if (!admin) throw new Error('The account ' + real + ' is not an instructor account.');
           const data = path === '/admin' ? await adminCall(env, real, action, key, args) : await attAdminCall(env, real, action, key, args);
-          return json({ ok: true, data: data });
-        }
-        if (path === '/att') return json({ ok: true, state: await attStudentCall(env, real, action, key, args) });
-        return json({ ok: true, state: await studentCall(env, real, admin, req, args) });
+          out = { ok: true, data: data };
+        } else if (path === '/att') out = { ok: true, state: await attStudentCall(env, real, action, key, args) };
+        else out = { ok: true, state: await studentCall(env, real, admin, req, args) };
+        if (session) out.session = session;
+        return json(out);
       }
       return json({ ok: false, error: 'Not found.' });
     } catch (err) {
@@ -87,14 +93,14 @@ const bytes = b64url => Uint8Array.from(atob(b64url.replace(/-/g, '+').replace(/
 const parse = b64url => JSON.parse(new TextDecoder().decode(bytes(b64url)));
 
 /**
- * Returns the verified email of a Google sign-in token: checks Google's
- * signature, that the token was issued for this tool's client ID, and that it
- * has not expired. The error text SIGNIN instructs the page to show the
- * sign-in button again.
+ * Returns {email, google} for a sign-in token: either a session token of this tool (see
+ * sessionToken) or a Google sign-in token, whose Google signature, client ID (this tool's),
+ * and expiry are checked. The error text SIGNIN instructs the page to show the sign-in button again.
  */
 async function verify(token, env) {
   try {
     const parts = String(token || '').split('.');
+    if (parts[0] === 's1') return { email: await verifySession(parts, env), google: false };
     if (parts.length !== 3 || !env.GOOGLE_CLIENT_ID) throw 0;
     const head = parse(parts[0]), p = parse(parts[1]);
     if (head.alg !== 'RS256') throw 0;
@@ -109,10 +115,44 @@ async function verify(token, env) {
     if (!signed || !issuer || p.aud !== env.GOOGLE_CLIENT_ID || !verified || !(Number(p.exp) * 1000 > Date.now())) throw 0;
     const email = canonEmail(p.email);
     if (!email) throw 0;
-    return email;
+    return { email: email, google: true };
   } catch (e) {
     throw new Error('SIGNIN');
   }
+}
+
+/**
+ * Session tokens: 's1.' + base64url({e: email, x: expiry ms}) + '.' + base64url(HMAC-SHA256 of that
+ * payload with the SESSION_SECRET secret). Issued after a Google sign-in, valid SESSION_DAYS days,
+ * kept by the page in the browser's storage, so a student signs in with Google once a semester and
+ * the instructor stays signed in on their own computer. Without the secret no token is issued.
+ * Signing out deletes the token from the browser; the token cannot be revoked server-side
+ * (change the secret to invalidate every session).
+ */
+const SESSION_DAYS = 180;
+const toB64url = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+async function sessionKey(env) {
+  if (!env.SESSION_SECRET) return null;
+  return crypto.subtle.importKey('raw', new TextEncoder().encode(env.SESSION_SECRET), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+}
+
+async function sessionToken(email, env) {
+  const key = await sessionKey(env);
+  if (!key) return '';
+  const payload = toB64url(new TextEncoder().encode(JSON.stringify({ e: email, x: Date.now() + SESSION_DAYS * 86400000 })));
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(payload));
+  return 's1.' + payload + '.' + toB64url(sig);
+}
+
+async function verifySession(parts, env) {
+  const key = await sessionKey(env);
+  if (!key || parts.length !== 3) throw 0;
+  const good = await crypto.subtle.verify('HMAC', key, bytes(parts[2]), new TextEncoder().encode(parts[1]));
+  const p = parse(parts[1]);
+  const email = canonEmail(p.e);
+  if (!good || !email || !(Number(p.x) > Date.now())) throw 0;
+  return email;
 }
 
 /** Instructors are the emails in the ADMIN_EMAILS secret. */

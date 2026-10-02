@@ -114,7 +114,8 @@
   var flash = null, busy = false, timer = null;
   // attendance_admin.html?qr=KEY is the QR screen of that class in its own tab (for the projector); see qrPage.
   var qrMode = new URLSearchParams(location.search).get('qr') || '';
-  try { token = sessionStorage.getItem(TOKEN_KEY) || ''; cur = qrMode || sessionStorage.getItem('att_admin_class') || ''; } catch (e) {}
+  // The token is kept in localStorage: the Worker's session token (sent after a Google sign-in) lasts months. "Sign out" deletes it.
+  try { token = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY) || ''; cur = qrMode || sessionStorage.getItem('att_admin_class') || ''; } catch (e) {}
 
   // ---------------------------------------------------------------- plumbing
 
@@ -136,7 +137,7 @@
 
   function setToken(t) {
     token = t || '';
-    try { token ? sessionStorage.setItem(TOKEN_KEY, token) : sessionStorage.removeItem(TOKEN_KEY); } catch (e) {}
+    try { token ? localStorage.setItem(TOKEN_KEY, token) : localStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(TOKEN_KEY); } catch (e) {}
   }
 
   function setClass(key) {
@@ -169,6 +170,7 @@
       body: JSON.stringify({ token: token, class: key === undefined ? cur : key, action: action, args: args || [] }) })
       .then(function (r) { return r.json(); })
       .then(function (out) {
+        if (out.session) setToken(out.session);
         if (out.ok) return out.data;
         if (out.error === 'SIGNIN') { setToken(''); showSignIn(); throw new Error('SIGNIN'); }
         throw new Error(out.error);

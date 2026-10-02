@@ -93,7 +93,8 @@
   var busy = false, flash = null, asking = false, ownLink = '', viewAs = '';
   var page = 'home';  // 'home', 'datasets', or 'topics'
   var expanded = {};  // tiles on the group card that are open: {dataset: true, topic: true}
-  try { token = sessionStorage.getItem(TOKEN_KEY) || ''; } catch (e) {}
+  // The token is kept in localStorage: the Worker's session token (sent after a Google sign-in) lasts months. "Sign out" deletes it.
+  try { token = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY) || ''; } catch (e) {}
 
   // ---------------------------------------------------------------- plumbing
 
@@ -114,7 +115,7 @@
 
   function setToken(t) {
     token = t || '';
-    try { token ? sessionStorage.setItem(TOKEN_KEY, token) : sessionStorage.removeItem(TOKEN_KEY); } catch (e) {}
+    try { token ? localStorage.setItem(TOKEN_KEY, token) : localStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(TOKEN_KEY); } catch (e) {}
   }
 
   /** Calls the backend. The body is sent as plain text so the browser makes no preflight request. */
@@ -124,6 +125,7 @@
     return fetch(API + '/', { method: 'POST', body: JSON.stringify(body) })
       .then(function (r) { return r.json(); })
       .then(function (out) {
+        if (out.session) setToken(out.session);
         if (out.ok) return out.state;
         if (out.error === 'SIGNIN') { setToken(''); S = null; showSignIn(); throw new Error('SIGNIN'); }
         throw new Error(out.error);

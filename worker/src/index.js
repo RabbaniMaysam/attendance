@@ -204,7 +204,10 @@ async function attStudentCall(env, real, action, key, args) {
     .bind(key, real, date + ' ', date + '~').all()).results;
   const answers = s.questions.length
     ? (await env.DB.prepare('SELECT qid, answer FROM att_answers WHERE class = ? AND email = ?').bind(key, real).all()).results : [];
-  return att.studentView(s, real, marks, now, id => answers.find(a => a.qid === id) || null);
+  const view = att.studentView(s, real, marks, now, id => answers.find(a => a.qid === id) || null);
+  // An instructor account that is not on the roster is sent to the instructor page instead of the roster error.
+  if (!view.authorized && isAdmin(real, env)) view.instructor = true;
+  return view;
 }
 
 // ---------------------------------------------------------------- instructor page

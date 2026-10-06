@@ -67,6 +67,9 @@ ok(/exists/.test((await att('createClass', [AK, 'again'], '')).error), 'duplicat
 r = await att('importRoster', ['first,last,email\nF1,L1,' + m(1) + '\nF2,L2,' + m(2)]);
 ok(r.ok && r.data.state.roster.length === 2 && r.data.state.schedule.open === '07:50', 'attendance roster imported, default schedule');
 ok((await attStu(9, 'state')).state.authorized === false, 'account outside the attendance roster is blocked');
+ok(!(await attStu(9, 'state')).state.instructor, 'a blocked student is not flagged as an instructor');
+r = await post('/att', { token: PROF, class: AK, action: 'state' });
+ok(r.state.authorized === false && r.state.instructor === true, 'an instructor account on the student page is flagged for the link to the instructor page');
 ok(/does not match any class/.test((await post('/att', { token: token(m(1)), class: 'nope', action: 'state' })).error), 'unknown class');
 
 // session tokens: issued after a Google sign-in, accepted afterwards, forgeries refused

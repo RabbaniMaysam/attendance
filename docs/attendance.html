@@ -250,6 +250,11 @@
     document.getElementById('signin').hidden = true;
     var signOutLink = el('button', { class: 'link', text: 'Sign out', on: { click: signOut } });
     app.appendChild(el('h1', { text: S.title }));
+    if (!S.authorized && S.instructor) {
+      app.appendChild(el('p', {}, 'This is the student page, and ' + S.email + ' is an instructor account. ',
+        el('a', { href: 'attendance_admin.html' + location.search, text: 'Open the instructor page' }), '. ', signOutLink));
+      return;
+    }
     if (!S.authorized) {
       app.appendChild(el('div', { class: 'banner err',
         text: 'The account ' + S.email + ' is not on the class roster. Sign in with the account of the email address your instructor has on file, or contact your instructor.' }));

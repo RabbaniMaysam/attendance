@@ -15,8 +15,10 @@ Daily dump into Google Drive
   is inside GDrive, so the dumps are synced; it is gitignored and never reaches
   the public repository). A dump is about 0.5 MB. The newest 90 dumps are kept,
   plus the first dump of every month, which is never deleted (12 files a year).
-  A failed export is retried twice, 90 seconds apart; last_run.log has the
-  output of the last attempt.
+  A failed export is retried up to five attempts, 10 minutes apart;
+  last_run.log has the output of every attempt of the last run. If all five
+  fail, the run writes BACKUP_FAILED.txt into backup/data/ (the next good run
+  deletes it).
 
   Scheduled task "group-signup backup" runs it daily at 03:00 (and on the next
   start-up if the PC was off; not on battery). Manage it in Task Scheduler, or:

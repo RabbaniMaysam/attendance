@@ -255,6 +255,8 @@ ok(acts.indexOf('create class') !== -1 && acts.indexOf('open now') !== -1 && act
   && lg.some(x => x.action === 'remove round' && /1 marks deleted$/.test(x.detail)) && lg.some(x => x.action === 'remove round' && /scheduled window removed/.test(x.detail)) && acts.indexOf('restore round') !== -1,
   'instructor actions logged (reads are not): ' + acts.filter((a, i) => acts.indexOf(a) === i).join(', '));
 ok(acts.indexOf('present') !== -1 && acts.indexOf('answer') !== -1 && acts.indexOf('refused: mark') !== -1 && acts.indexOf('refused: setMark') !== -1, 'student marks, answers, and refusals logged');
+ok(lg.some(x => x.action === 'sign in' && x.actor === m(1)) && lg.some(x => x.action === 'refused: state' && x.actor === m(9) && /not on the class roster/.test(x.detail)),
+  'Google sign-ins on the student page and page loads by accounts outside the roster are logged');
 ok(lg.filter(x => x.action === 'present').length === 2 && lg.every(x => x.action !== 'state'), 'a mark is logged once per press that changes something; page loads are not logged');
 ok(lg.find(x => x.action === 'set absent').detail.indexOf('F1 L1 (' + m(1) + '), round ' + round1) === 0 && lg.find(x => x.action === 'add student').detail.indexOf('Al Ash (asha1@montclair.edu)') === 0, 'details name the student and the round');
 ok((await att('log', ['', 'instructor', 5000])).data.rows.every(x => /\(instructor\)$/.test(x.actor)) && (await att('log', ['', 'students', 5000])).data.rows.every(x => !/\(instructor\)/.test(x.actor))

@@ -45,6 +45,8 @@ export default {
         // After a Google sign-in the answer carries a session token of this tool, which the page keeps
         // for the following visits (Google's own token lasts an hour and the page cannot renew it silently).
         const session = who.google ? await sessionToken(real, env) : '';
+        // A Google sign-in on the student page is logged (later visits use the session token), so the log shows who signed in and when.
+        if (who.google && path === '/att' && key) await attLog(env, key, real, 'sign in', 'Google sign-in on the student page');
         let out;
         if (path === '/att/admin') {
           if (!isAdmin(real, env)) throw new Error('The account ' + real + ' is not an instructor account.');
@@ -207,6 +209,7 @@ async function attStudentCall(env, real, action, key, args) {
   const view = att.studentView(s, real, marks, now, id => answers.find(a => a.qid === id) || null);
   // An instructor account that is not on the roster is sent to the instructor page instead of the roster error.
   if (!view.authorized && isAdmin(real, env)) view.instructor = true;
+  else if (!view.authorized) await attLog(env, key, real, 'refused: ' + action, 'This account is not on the class roster.');
   return view;
 }
 

@@ -1,20 +1,17 @@
 /**
- * Group, dataset, and topic sign-up tool: backend (Cloudflare Worker + D1).
+ * Attendance tool: backend (Cloudflare Worker + D1).
  * The pages in docs/ (GitHub Pages) call it. See README.md.
  *
- *   GET  /config  -> {clientId, classes}        public, needed before sign-in
- *   POST /        -> student page: {token, class, action, args, viewAs, note}
- *   POST /admin   -> instructor page: {token, class, action, args}
- *   /att/config, /att, /att/admin -> the attendance tool (see the end of this file)
+ *   GET  /att/config  -> {clientId, classes, sessions}     public, needed before sign-in
+ *   POST /att         -> student page: {token, class, action: 'state' | 'mark' | 'answer', args: [qid, answer]}   -> {ok, state}
+ *   POST /att/admin   -> instructor page: {token, class, action, args}                                         -> {ok, data}
  *
- * Each class is one row of the classes table holding its state as JSON (see
- * rules.js). A change is written only if the row's version is the one that was
- * read, so two simultaneous claims of the same item cannot both succeed: the
- * second is recomputed against the first one's result and refused.
+ * Settings, roster, and questions are one JSON row per class (att_classes); marks are rows of
+ * att_marks and answers rows of att_answers. The paths and the 'att:' prefix of the log's class
+ * column are those of the group sign-up tool, where this tool lived until 2026-10-05.
  */
 
-import { act, view, adminAct, isAdminAction, newClass, upgrade, canonEmail } from './rules.js';
-import { SEED_DATASETS, SEED_TOPICS } from './seed.js';
+import { canonEmail } from './roster.js';
 import * as att from './attendance.js';
 
 const CORS = {
@@ -32,26 +29,16 @@ export default {
     const path = new URL(request.url).pathname;
     if (request.method === 'OPTIONS') return new Response(null, { headers: CORS });
     try {
-      if (request.method === 'GET' && path === '/config') {
-        return json({ clientId: env.GOOGLE_CLIENT_ID || '', classes: await classList(env) });
-      }
-      // The pages poll this cheap call and reload the state only when the number changed.
-      if (request.method === 'GET' && path === '/version') {
-        const key = new URL(request.url).searchParams.get('c') || '';
-        const row = await env.DB.prepare('SELECT version FROM classes WHERE key = ?').bind(key).first();
-        return json({ version: row ? row.version : -1 });
-      }
       if (request.method === 'GET' && path === '/att/config') {
         // "sessions" says whether the SESSION_SECRET secret is set (without it every sign-in lasts one hour).
         return json({ clientId: env.GOOGLE_CLIENT_ID || '', classes: await attClassList(env), sessions: !!env.SESSION_SECRET });
       }
-      if (request.method === 'POST' && (path === '/' || path === '/admin' || path === '/att' || path === '/att/admin')) {
+      if (request.method === 'POST' && (path === '/att' || path === '/att/admin')) {
         const body = await request.text();
         if (body.length > 1000000) throw new Error('The request is too large.');
         const req = JSON.parse(body);
         const who = await verify(req.token, env);
         const real = who.email;
-        const admin = isAdmin(real, env);
         const args = Array.isArray(req.args) ? req.args.slice(0, 8) : [];
         const key = String(req.class || '');
         const action = String(req.action);
@@ -59,12 +46,10 @@ export default {
         // for the following visits (Google's own token lasts an hour and the page cannot renew it silently).
         const session = who.google ? await sessionToken(real, env) : '';
         let out;
-        if (path === '/admin' || path === '/att/admin') {
-          if (!admin) throw new Error('The account ' + real + ' is not an instructor account.');
-          const data = path === '/admin' ? await adminCall(env, real, action, key, args) : await attAdminCall(env, real, action, key, args);
-          out = { ok: true, data: data };
-        } else if (path === '/att') out = { ok: true, state: await attStudentCall(env, real, action, key, args) };
-        else out = { ok: true, state: await studentCall(env, real, admin, req, args) };
+        if (path === '/att/admin') {
+          if (!isAdmin(real, env)) throw new Error('The account ' + real + ' is not an instructor account.');
+          out = { ok: true, data: await attAdminCall(env, real, action, key, args) };
+        } else out = { ok: true, state: await attStudentCall(env, real, action, key, args) };
         if (session) out.session = session;
         return json(out);
       }
@@ -163,166 +148,7 @@ function isAdmin(email, env) {
 
 // ---------------------------------------------------------------- storage
 
-async function classList(env) {
-  const out = await env.DB.prepare(
-    "SELECT key, json_extract(state, '$.settings.title') AS title FROM classes ORDER BY key").all();
-  return out.results;
-}
-
-async function readClass(env, key) {
-  const row = await env.DB.prepare('SELECT version, state FROM classes WHERE key = ?').bind(key).first();
-  if (!row) throw new Error('This link does not match any class.');
-  return { version: row.version, state: upgrade(JSON.parse(row.state)), raw: row.state };
-}
-
 const LOG_SQL = 'INSERT INTO log (time, class, actor, action, detail) ';
-
-function logNow(env, key, actor, action, detail) {
-  return env.DB.prepare(LOG_SQL + 'VALUES (?, ?, ?, ?, ?)')
-    .bind(new Date().toISOString(), key, actor, action, String(detail).slice(0, 2000)).run();
-}
-
-/**
- * Reads the class, applies fn (which changes the state in place and returns
- * log lines), and writes the result with its log lines in one transaction,
- * provided nobody else wrote in between. Otherwise it starts over on the
- * newer state. A refusal by fn is logged and passed on.
- */
-async function mutate(env, key, who, action, args, fn) {
-  for (let attempt = 0; attempt < 60; attempt++) {
-    // Each round of simultaneous writers has one winner; the others wait briefly and recompute.
-    if (attempt) await new Promise(r => setTimeout(r, Math.random() * Math.min(attempt, 10) * 15));
-    const row = await readClass(env, key);
-    let logs;
-    try {
-      logs = fn(row.state);
-    } catch (err) {
-      // Refused attempts are logged too, so the log shows what was tried and why it failed.
-      const shown = args.map(a => (typeof a === 'string' ? a.slice(0, 200) : JSON.stringify(a).slice(0, 200)));
-      await logNow(env, key, who, 'refused: ' + action, shown.join(', ') + (shown.length ? ' | ' : '') + err.message);
-      throw err;
-    }
-    if (!logs.length) return { state: row.state, version: row.version };  // nothing changed
-    const stamp = crypto.randomUUID();
-    const time = new Date().toISOString();
-    const guard = ' WHERE EXISTS (SELECT 1 FROM classes WHERE key = ? AND stamp = ?)';
-    const res = await env.DB.batch([
-      env.DB.prepare('UPDATE classes SET state = ?, version = version + 1, stamp = ? WHERE key = ? AND version = ?')
-        .bind(JSON.stringify(row.state), stamp, key, row.version),
-      // The state as it was before this change, for the History tab of the instructor page.
-      env.DB.prepare('INSERT INTO snapshots (time, class, actor, action, detail, state) SELECT ?, ?, ?, ?, ?, ?' + guard)
-        .bind(time, key, logs[0].actor, action.replace(/([A-Z])/g, c => ' ' + c.toLowerCase()),
-              logs.map(l => l.detail).join('; ').slice(0, 2000), row.raw, key, stamp)
-    ].concat(logs.map(l =>
-      env.DB.prepare(LOG_SQL + 'SELECT ?, ?, ?, ?, ?' + guard)
-        .bind(time, key, l.actor, l.action, String(l.detail).slice(0, 2000), key, stamp))));
-    if (res[0].meta.changes === 1) return { state: row.state, version: row.version + 1 };
-  }
-  throw new Error('The page is busy. Try again in a few seconds.');
-}
-
-// ---------------------------------------------------------------- student page
-
-async function studentCall(env, real, admin, req, args) {
-  const key = String(req.class || '');
-  const viewAs = String(req.viewAs || '').trim().toLowerCase();
-  const action = String(req.action);
-  if (action === 'state') {
-    const row = await readClass(env, key);
-    const v = view(row.state, real, viewAs, admin, Date.now());
-    if (req.note === 'sign in' || req.note === 'open page') {
-      await logNow(env, key, real, req.note, v.authorized ? (v.me || viewAs ? '' : 'instructor') : 'not on the class roster');
-    }
-    v.version = row.version;
-    return v;
-  }
-  const who = real + (admin && viewAs ? ' (as ' + viewAs + ')' : '');
-  const row = await mutate(env, key, who, action, args, s => act(s, real, action, args, viewAs, admin, Date.now()));
-  const v = view(row.state, real, viewAs, admin, Date.now());
-  v.version = row.version;
-  return v;
-}
-
-// ---------------------------------------------------------------- instructor page
-
-async function adminCall(env, real, action, key, args) {
-  const who = real + ' (instructor)';
-  if (action === 'whoami') return { email: real, classes: await classList(env) };
-
-  if (action === 'createClass') {
-    const newKey = String(args[0] || '').trim().toLowerCase();
-    const title = String(args[1] || '').trim();
-    if (!/^[a-z0-9-]{2,30}$/.test(newKey)) throw new Error('The class key must be 2 to 30 lowercase letters, digits, or hyphens.');
-    if (!title) throw new Error('The class needs a title.');
-    const state = newClass(title, SEED_DATASETS, SEED_TOPICS);
-    if (args[2]) {
-      const from = (await readClass(env, String(args[2]))).state;
-      state.datasets = from.datasets;
-      state.topics = from.topics;
-      state.settings = Object.assign({}, from.settings, { title: title, deadline: '' });
-    }
-    const res = await env.DB.prepare('INSERT OR IGNORE INTO classes (key, state) VALUES (?, ?)')
-      .bind(newKey, JSON.stringify(state)).run();
-    if (res.meta.changes !== 1) throw new Error('A class with the key "' + newKey + '" exists.');
-    await logNow(env, newKey, who, 'create class', title + (args[2] ? ' (catalogs copied from ' + args[2] + ')' : ''));
-    return { key: newKey, classes: await classList(env) };
-  }
-
-  if (action === 'deleteClass') {
-    if (String(args[0]) !== key) throw new Error('Type the class key exactly to delete the class.');
-    await readClass(env, key);
-    await env.DB.batch([
-      env.DB.prepare('DELETE FROM classes WHERE key = ?').bind(key),
-      env.DB.prepare('DELETE FROM log WHERE class = ?').bind(key),
-      env.DB.prepare('DELETE FROM snapshots WHERE class = ?').bind(key)
-    ]);
-    return { classes: await classList(env) };
-  }
-
-  if (action === 'get') return await readClass(env, key);
-
-  // Every change saved a snapshot of the state before it. Newest first.
-  if (action === 'snapshots') {
-    const limit = Math.min(Math.max(Number(args[0]) || 300, 1), 5000);
-    const out = await env.DB.prepare(
-      'SELECT id, time, actor, action, detail FROM snapshots WHERE class = ? ORDER BY id DESC LIMIT ?').bind(key, limit).all();
-    return { rows: out.results };
-  }
-
-  // Puts the class back to the state saved in one snapshot. The current state is snapshotted first, so a restore can itself be undone.
-  if (action === 'restore') {
-    const snap = await env.DB.prepare('SELECT id, time, actor, action, detail, state FROM snapshots WHERE class = ? AND id = ?')
-      .bind(key, Number(args[0])).first();
-    if (!snap) throw new Error('That snapshot does not exist.');
-    const old = upgrade(JSON.parse(snap.state));
-    return await mutate(env, key, who, action, [snap.id], s => {
-      Object.keys(s).forEach(k => delete s[k]);
-      Object.assign(s, old);
-      return [{ actor: who, action: 'restore', detail: 'state as of ' + snap.time + ', before "' + snap.action + '" by ' + snap.actor + ' (snapshot ' + snap.id + ')' }];
-    });
-  }
-
-  if (action === 'log') {
-    const like = '%' + String(args[0] || '').replace(/[%_]/g, '') + '%';
-    const limit = Math.min(Math.max(Number(args[1]) || 300, 1), 20000);
-    const out = await env.DB.prepare(
-      'SELECT id, time, actor, action, detail FROM log WHERE class = ? AND (actor LIKE ? OR action LIKE ? OR detail LIKE ?) ' +
-      'ORDER BY id DESC LIMIT ?').bind(key, like, like, like, limit).all();
-    return { rows: out.results };
-  }
-
-  if (!isAdminAction(action)) throw new Error('Unknown action.');
-  return await mutate(env, key, who, action, action === 'importRoster' ? ['(file)'] : args,
-    s => adminAct(s, real, action, args, Date.now()));
-}
-
-// ---------------------------------------------------------------- attendance tool
-//
-//   GET  /att/config          -> {clientId, classes}
-//   POST /att        {token, class, action: 'state' | 'mark' | 'answer', args: [qid, answer]}   -> {ok, state}
-//   POST /att/admin  {token, class, action, args}               -> {ok, data}
-// Settings, roster, and questions are one JSON row per class (att_classes); marks are rows of
-// att_marks and answers rows of att_answers.
 
 async function attClassList(env) {
   const out = await env.DB.prepare("SELECT key, json_extract(state, '$.title') AS title FROM att_classes ORDER BY key").all();
@@ -341,8 +167,11 @@ function writeAtt(env, key, s) {
   return env.DB.prepare('UPDATE att_classes SET state = ? WHERE key = ?').bind(JSON.stringify(s), key).run();
 }
 
-// The attendance log shares the log table with the sign-up tool; its class key is prefixed so the two never mix.
-const attLog = (env, key, actor, action, detail) => logNow(env, 'att:' + key, actor, action, detail || '');
+// The log's class column is 'att:' + the class key (kept from the time the log was shared with the sign-up tool).
+const attLog = (env, key, actor, action, detail) => env.DB.prepare(LOG_SQL + 'VALUES (?, ?, ?, ?, ?)')
+  .bind(new Date().toISOString(), 'att:' + key, actor, action, String(detail || '').slice(0, 2000)).run();
+
+// ---------------------------------------------------------------- student page
 
 async function attStudentCall(env, real, action, key, args) {
   const s = await readAtt(env, key);
@@ -377,6 +206,8 @@ async function attStudentCall(env, real, action, key, args) {
     ? (await env.DB.prepare('SELECT qid, answer FROM att_answers WHERE class = ? AND email = ?').bind(key, real).all()).results : [];
   return att.studentView(s, real, marks, now, id => answers.find(a => a.qid === id) || null);
 }
+
+// ---------------------------------------------------------------- instructor page
 
 const ATT_READS = { whoami: 1, get: 1, log: 1, export: 1 };
 
@@ -551,7 +382,7 @@ async function attAdminDo(env, real, who, action, key, args) {
     ? (await env.DB.prepare('SELECT qid, email, answer, time FROM att_answers WHERE class = ?').bind(key).all()).results : [];
   const roundsList = att.rounds(s, ids, now);
   const open = att.windowAt(s, now);
-  // The secret is sent apart from the state (never in a download): the page computes the 10-second session codes from it and `now`.
+  // The secret is sent apart from the state (never in a download): the page computes the session codes from it and `now`.
   const state = Object.assign({}, s); delete state.secret;
   return { state: state, marks: marks, answers: answers, rounds: roundsList, today: att.nyParts(now).date,
            open: open, secret: s.secret, next: att.nextWindow(s, now), now: new Date(now).toISOString(),

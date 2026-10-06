@@ -1,27 +1,26 @@
-# Daily backup of the whole database: both tools (sign-up classes, logs, undo snapshots; attendance classes, marks, answers).
-# Writes a full SQL dump to backups\group-signup\ in the tools folder that contains this repository
-# (F:\GDriveMay\Maysam\01_online_tools\backups\group-signup), which lives in Google Drive and is never committed.
-# Restore one with:  npx wrangler d1 execute group-signup --remote --file "<that folder>\<file>.sql"
-# Registered as a Windows scheduled task "group-signup backup" (see backup/README.txt).
+# Daily backup of the attendance database (classes, marks, answers, log).
+# Writes a full SQL dump to backups\attendance\ in the tools folder that contains this repository
+# (F:\GDriveMay\Maysam\01_online_tools\backups\attendance), which lives in Google Drive and is never committed.
+# Restore one with:  npx wrangler d1 execute attendance --remote --file "<that folder>\<file>.sql"
+# Registered as a Windows scheduled task "attendance backup" (see backup/README.txt).
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$out = Join-Path (Split-Path -Parent $root) 'backups\group-signup'
+$out = Join-Path (Split-Path -Parent $root) 'backups\attendance'
 New-Item -ItemType Directory -Force -Path $out | Out-Null
-$file = Join-Path $out ('group-signup_' + (Get-Date -Format 'yyyy-MM-dd_HHmm') + '.sql')
+$file = Join-Path $out ('attendance_' + (Get-Date -Format 'yyyy-MM-dd_HHmm') + '.sql')
 $log = Join-Path $out 'last_run.log'
 $flag = Join-Path $out 'BACKUP_FAILED.txt'
 Set-Location (Join-Path $root 'worker')
 Set-Content $log ('Backup started ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')) -Encoding utf8
-# The Cloudflare export fails now and then (it failed at 03:00 on 2026-10-04 and 2026-10-05 and
-# worked by hand the same evening); try up to five times, 10 minutes apart.
+# The Cloudflare export fails now and then; try up to five times, 10 minutes apart.
 # Wrangler writes progress and errors to stderr. Under 'Stop' PowerShell 5.1 turns the first stderr
-# line into a terminating error, which ended the script before any retry; so relax it for the call.
+# line into a terminating error, which would end the script before any retry; so relax it for the call.
 $ok = $false
 foreach ($try in 1..5) {
   Add-Content $log ("`r`n--- attempt $try at " + (Get-Date -Format 'HH:mm:ss')) -Encoding utf8
   if (Test-Path $file) { Remove-Item $file }
   $ErrorActionPreference = 'Continue'
-  & npx --yes wrangler d1 export group-signup --remote --output $file 2>&1 |
+  & npx --yes wrangler d1 export attendance --remote --output $file 2>&1 |
     ForEach-Object { ("$_" -replace "\x1b\[[0-9;]*m", '') -replace 'https://\S+', '<download link removed>' } |
     Add-Content $log -Encoding utf8
   $ErrorActionPreference = 'Stop'
@@ -40,6 +39,7 @@ $ErrorActionPreference = 'Continue'
 if ($LASTEXITCODE -ne 0) { Add-Content $log 'CSV export failed (the SQL dump is fine).' -Encoding utf8 }
 $ErrorActionPreference = 'Stop'
 # Keep the newest 90 dumps (one per day), plus the first dump of every month for good.
-$dumps = Get-ChildItem $out -Filter 'group-signup_*.sql' | Sort-Object Name -Descending
-$monthly = $dumps | Group-Object { $_.Name.Substring(13, 7) } | ForEach-Object { ($_.Group | Sort-Object Name | Select-Object -First 1).FullName }
+# Name: attendance_YYYY-MM-DD_HHMM.sql, so the month is characters 11 to 17.
+$dumps = Get-ChildItem $out -Filter 'attendance_*.sql' | Sort-Object Name -Descending
+$monthly = $dumps | Group-Object { $_.Name.Substring(11, 7) } | ForEach-Object { ($_.Group | Sort-Object Name | Select-Object -First 1).FullName }
 $dumps | Select-Object -Skip 90 | Where-Object { $monthly -notcontains $_.FullName } | Remove-Item

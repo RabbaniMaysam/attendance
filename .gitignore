@@ -1,19 +1,13 @@
 # Rosters and other student data never belong in this public repository
 *.csv
 *.xlsx
-!roster_template.csv
-
-# Google login credentials for clasp, and the local link to each class's script project
-.clasprc.json
-.clasp*.json
-classes/
 
 # Local Worker state and local secrets
 .wrangler/
 .dev.vars
 
-# Database dumps (student data) are written outside the repository, to ..\backups\group-signup;
-# this line guards against an old copy of the backup script writing here.
+# Database dumps (student data) are written outside the repository, to ..\backups\attendance;
+# this line guards against a script writing here by mistake.
 backup/data/
 
 node_modules/

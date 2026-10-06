@@ -1,19 +1,18 @@
 // Readable CSV copies of a database dump, written by backup.ps1 after each daily dump.
 //   node --no-warnings backup/export_csv.mjs [dump.sql]
-// Without an argument it reads the newest dump in ..\backups\group-signup. The files go to
-// ..\backups\group-signup\csv\ and replace the previous set; to see an older day, run it on that day's dump.
-// The attendance files reuse the tool's own functions (worker/src/attendance.js), so their counts and
+// Without an argument it reads the newest dump in ..\backups\attendance. The files go to
+// ..\backups\attendance\csv\ and replace the previous set; to see an older day, run it on that day's dump.
+// The files reuse the tool's own functions (worker/src/attendance.js), so their counts and
 // points equal the instructor page's, and their columns equal the page's "Download CSV" buttons.
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, rmSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as att from '../worker/src/attendance.js';
-import { upgrade } from '../worker/src/rules.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const store = join(here, '..', '..', 'backups', 'group-signup');
-const dump = process.argv[2] || join(store, readdirSync(store).filter(f => /^group-signup_.*\.sql$/.test(f)).sort().pop());
+const store = join(here, '..', '..', 'backups', 'attendance');
+const dump = process.argv[2] || join(store, readdirSync(store).filter(f => /^attendance_.*\.sql$/.test(f)).sort().pop());
 const out = join(store, 'csv');
 
 // The dump's moment, from its name (New York time): the attendance rounds are counted up to it.
@@ -33,7 +32,6 @@ const isoFull = iso => new Intl.DateTimeFormat('en-US', { timeZone: TZ, year: 'n
 const isoClock = iso => new Intl.DateTimeFormat('en-US', { timeZone: TZ, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(iso));
 const clock = hhmm => { const h = Number(hhmm.split(':')[0]); return ((h + 11) % 12 + 1) + ':' + hhmm.split(':')[1] + (h < 12 ? ' am' : ' pm'); };
 const num = (x, d) => (Math.round(x * Math.pow(10, d)) / Math.pow(10, d)).toFixed(d);
-const fullName = r => (r.first + ' ' + r.last).trim();
 const safe = k => String(k).replace(/[^A-Za-z0-9_.-]/g, '_');
 
 let files = 0;
@@ -50,7 +48,6 @@ function logRows(cls) {
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
 
-// ---- attendance classes
 for (const row of all('SELECT key, state FROM att_classes ORDER BY key')) {
   const k = row.key, s = att.upgradeAtt(JSON.parse(row.state));
   const marks = all('SELECT round, email, self, present, edited, by FROM att_marks WHERE class = ? ORDER BY round, email', k);
@@ -99,28 +96,10 @@ for (const row of all('SELECT key, state FROM att_classes ORDER BY key')) {
   write('attendance_' + safe(k) + '_log.csv', logRows('att:' + k));
 }
 
-// ---- sign-up classes
-for (const row of all('SELECT key, state FROM classes ORDER BY key')) {
-  const k = row.key, C = upgrade(JSON.parse(row.state));
-  const membersOf = name => C.roster.filter(r => r.group === name);
-  const claimBy = (g, f) => g[f] === '' ? '' : (g[f + 'By'] === 'instructor' ? 'instructor' : 'group');
-  // Groups (as the instructor page's "Download groups").
-  write('signup_' + safe(k) + '_groups.csv', [['Group', 'Leader', 'Members', 'Member emails', 'Dataset code', 'Dataset', 'Own dataset link', 'Dataset set by', 'Topic code', 'Topic', 'Topic set by']]
-    .concat(C.groups.map(g => {
-      const ms = membersOf(g.name), d = C.datasets.find(x => x.code === g.dataset), t = C.topics.find(x => x.code === g.topic);
-      const lead = ms.find(r => r.email === g.leader);
-      return [g.name, lead ? fullName(lead) : g.leader, ms.map(fullName).join('; '), ms.map(r => r.email).join('; '),
-        g.dataset, d ? d.name : '', g.ownLink, claimBy(g, 'dataset'), g.topic, t ? t.topic : '', claimBy(g, 'topic')];
-    })));
-  write('signup_' + safe(k) + '_roster.csv', [['Last name', 'First name', 'Email', 'Group', 'Joined (New York)']]
-    .concat(C.roster.map(r => [r.last, r.first, r.email, r.group || '', r.joinedAt ? isoFull(r.joinedAt) : ''])));
-  write('signup_' + safe(k) + '_log.csv', logRows(k));
-}
-
 writeFileSync(join(out, 'README.txt'),
   'Readable copies of the database dump ' + basename(dump) + ', written ' + new Date().toISOString() + '.\r\n' +
-  'They are replaced at every daily backup. For an older day, run from the group-signup folder:\r\n' +
+  'They are replaced at every daily backup. For an older day, run from the attendance folder:\r\n' +
   '  node --no-warnings backup/export_csv.mjs "<path of that day\'s .sql file>"\r\n' +
   'attendance_<class>_grid: one column per round (1 = present) and its manual change (+1/-1); summary: totals and points;\r\n' +
-  'answers: in-class questions; log: every action, oldest first. signup_<class>_groups/roster/log: the sign-up tool.\r\n');
+  'answers: in-class questions; log: every action, oldest first.\r\n');
 console.log('Wrote ' + files + ' CSV files from ' + basename(dump) + ' to ' + out);

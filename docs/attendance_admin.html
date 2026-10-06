@@ -105,8 +105,8 @@
   <div id="signin" hidden></div>
 </main>
 <script>
-  var API = (window.SIGNUP_API || '').replace(/\/+$/, '');
-  var TOKEN_KEY = 'signup_token';  // shared with the sign-up instructor page: one sign-in serves both
+  var API = (window.ATTENDANCE_API || '').replace(/\/+$/, '');
+  var TOKEN_KEY = 'attendance_admin_token';  // this tool's own key: the sign-up tool's pages share the origin and keep their own token
   var TZ = 'America/New_York';
   var DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   var TABS = ['Attendance', 'Questions', 'QR code', 'Reports', 'Log', 'Settings', 'Roster'];
@@ -519,7 +519,7 @@
     app.appendChild(el('h1', { text: 'Attendance: instructor page' }));
     app.appendChild(el('p', { class: 'muted' }, 'Signed in as ' + me + '. ',
       el('button', { class: 'link', text: 'Sign out', on: { click: signOut } }), ' · ',
-      el('a', { href: 'admin.html', text: 'Group sign-up instructor page' })));
+      el('a', { href: 'https://rabbanimaysam.github.io/group-signup/admin.html', text: 'Group sign-up instructor page' })));
 
     // class chooser and creation
     var chooser = el('div', { class: 'row' });

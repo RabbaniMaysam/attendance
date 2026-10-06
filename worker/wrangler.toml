@@ -1,4 +1,4 @@
-name = "group-signup"
+name = "attendance"
 main = "src/index.js"
 compatibility_date = "2025-01-01"
 workers_dev = true
@@ -6,11 +6,14 @@ preview_urls = false
 
 [vars]
 # Public identifier of the "Sign in with Google" button (Google Cloud Console). Not a secret.
+# The same client ID as the group sign-up tool.
 GOOGLE_CLIENT_ID = "308086551990-5bad5hnam1k2d3l6br1kphht2eov0l2n.apps.googleusercontent.com"
 
-# The instructor emails are stored as a secret, not here:  npx wrangler secret put ADMIN_EMAILS
+# The instructor emails and the session key are secrets, not here:
+#   npx wrangler secret put ADMIN_EMAILS
+#   npx wrangler secret put SESSION_SECRET
 
 [[d1_databases]]
 binding = "DB"
-database_name = "group-signup"
-database_id = "ee960f78-2bbb-4e75-bb9d-ee82633de9f7"
+database_name = "attendance"
+database_id = "285b258c-005f-47e4-b9d2-af0a47628bd8"

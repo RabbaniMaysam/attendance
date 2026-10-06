@@ -1,5 +1,5 @@
 {
-  "name": "group-signup-worker",
+  "name": "attendance-worker",
   "private": true,
   "type": "module"
 }

@@ -27,7 +27,7 @@
  * email, so a day with three windows has three rounds and three columns in the grid.
  */
 
-import { parseRoster, canonEmail } from './rules.js';
+import { parseRoster, canonEmail } from './roster.js';
 
 export const TZ = 'America/New_York';
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];

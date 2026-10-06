@@ -58,7 +58,7 @@
 </main>
 <script>
   // The class is chosen by the link (?c=key).
-  var API = (window.SIGNUP_API || '').replace(/\/+$/, '');
+  var API = (window.ATTENDANCE_API || '').replace(/\/+$/, '');
   var classKey = new URLSearchParams(location.search).get('c') || '';
   var TOKEN_KEY = 'attendance_token';
   var conf = null, token = '', S = null, busy = false, flash = '', timer = null;

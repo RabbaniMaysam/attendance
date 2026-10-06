@@ -22,6 +22,13 @@ Daily dump into Google Drive
   fail, the run writes BACKUP_FAILED.txt into that folder (the next good run
   deletes it).
 
+  After each dump, export_csv.mjs writes readable CSV copies of it into the
+  csv\ subfolder of that folder (replacing the previous set): per attendance
+  class the grid, the summary, the answers, and the log; per sign-up class the
+  groups, the roster, and the log. Their columns and totals equal the instructor
+  pages' "Download CSV" buttons. For an older day, from this repository's folder:
+    node --no-warnings backup/export_csv.mjs "<path of that day's .sql file>"
+
   Scheduled task "group-signup backup" runs it daily at 03:00 (and on the next
   start-up if the PC was off; not on battery). Manage it in Task Scheduler, or:
     schtasks /Query /TN "group-signup backup"

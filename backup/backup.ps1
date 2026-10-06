@@ -34,6 +34,11 @@ if (-not $ok) {
 }
 if (Test-Path $flag) { Remove-Item $flag }
 Add-Content $log ('Saved ' + (Split-Path $file -Leaf) + ', ' + (Get-Item $file).Length + ' bytes') -Encoding utf8
+# Readable CSV copies of this dump in csv\ (export_csv.mjs). A failure here is logged; the dump is kept.
+$ErrorActionPreference = 'Continue'
+& node --no-warnings (Join-Path $PSScriptRoot 'export_csv.mjs') $file 2>&1 | ForEach-Object { "$_" } | Add-Content $log -Encoding utf8
+if ($LASTEXITCODE -ne 0) { Add-Content $log 'CSV export failed (the SQL dump is fine).' -Encoding utf8 }
+$ErrorActionPreference = 'Stop'
 # Keep the newest 90 dumps (one per day), plus the first dump of every month for good.
 $dumps = Get-ChildItem $out -Filter 'group-signup_*.sql' | Sort-Object Name -Descending
 $monthly = $dumps | Group-Object { $_.Name.Substring(13, 7) } | ForEach-Object { ($_.Group | Sort-Object Name | Select-Object -First 1).FullName }

@@ -12,7 +12,8 @@ classes/
 .wrangler/
 .dev.vars
 
-# Database dumps (student data); they stay in Google Drive
+# Database dumps (student data) are written outside the repository, to ..\backups\group-signup;
+# this line guards against an old copy of the backup script writing here.
 backup/data/
 
 node_modules/

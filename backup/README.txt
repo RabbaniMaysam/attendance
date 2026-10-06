@@ -11,13 +11,15 @@ Where the data lives
     npx wrangler d1 time-travel restore group-signup --timestamp <ISO time>
 
 Daily dump into Google Drive
-  backup.ps1 exports the whole database as SQL into backup/data/ (this folder
-  is inside GDrive, so the dumps are synced; it is gitignored and never reaches
-  the public repository). A dump is about 0.5 MB. The newest 90 dumps are kept,
+  backup.ps1 exports the whole database as SQL into backups\group-signup\ of
+  the tools folder that contains this repository
+  (F:\GDriveMay\Maysam\01_online_tools\backups\group-signup). That folder is in
+  Google Drive, so the dumps are synced, and it is outside the repository, so
+  they never reach the public repository. A dump is about 0.5 MB. The newest 90 dumps are kept,
   plus the first dump of every month, which is never deleted (12 files a year).
   A failed export is retried up to five attempts, 10 minutes apart;
   last_run.log has the output of every attempt of the last run. If all five
-  fail, the run writes BACKUP_FAILED.txt into backup/data/ (the next good run
+  fail, the run writes BACKUP_FAILED.txt into that folder (the next good run
   deletes it).
 
   Scheduled task "group-signup backup" runs it daily at 03:00 (and on the next
@@ -34,7 +36,7 @@ Per-class download from the attendance page
 
 Restoring a dump
   From the worker/ folder:
-    npx wrangler d1 execute group-signup --remote --file "../backup/data/<file>.sql"
+    npx wrangler d1 execute group-signup --remote --file "../../backups/group-signup/<file>.sql"
   The dump recreates the tables, so drop them first if they exist
   (npx wrangler d1 execute group-signup --remote --command "DROP TABLE classes; DROP TABLE log; DROP TABLE snapshots; DROP TABLE att_classes; DROP TABLE att_marks; DROP TABLE att_answers"),
   or restore a single class by copying its INSERT lines (att_marks rows are

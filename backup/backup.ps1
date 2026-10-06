@@ -1,10 +1,11 @@
 # Daily backup of the whole database: both tools (sign-up classes, logs, undo snapshots; attendance classes, marks, answers).
-# Writes a full SQL dump to backup/data/, which lives in Google Drive and is never committed.
-# Restore one with:  npx wrangler d1 execute group-signup --remote --file "backup/data/<file>.sql"
+# Writes a full SQL dump to backups\group-signup\ in the tools folder that contains this repository
+# (F:\GDriveMay\Maysam\01_online_tools\backups\group-signup), which lives in Google Drive and is never committed.
+# Restore one with:  npx wrangler d1 execute group-signup --remote --file "<that folder>\<file>.sql"
 # Registered as a Windows scheduled task "group-signup backup" (see backup/README.txt).
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$out = Join-Path $PSScriptRoot 'data'
+$out = Join-Path (Split-Path -Parent $root) 'backups\group-signup'
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 $file = Join-Path $out ('group-signup_' + (Get-Date -Format 'yyyy-MM-dd_HHmm') + '.sql')
 $log = Join-Path $out 'last_run.log'

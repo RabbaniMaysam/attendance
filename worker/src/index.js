@@ -179,37 +179,39 @@ async function attStudentCall(env, real, action, key, args) {
   const s = await readAtt(env, key);
   const now = Date.now();
   const date = att.nyParts(now).date;
+  // A student may sign in with any of the addresses on the roster entry; marks and answers are stored under the main one.
+  const me = att.student(s, real), id = me ? me.email : real;
   try {
     if (action === 'mark') {
-      if (!att.student(s, real)) throw new Error('This account is not on the class roster.');
+      if (!me) throw new Error('This account is not on the class roster.');
       const open = att.windowAt(s, now);
       if (!open) throw new Error('Attendance is not open right now.');
       att.checkCode(s, args[0], now);
       // The first press sets self; a later press (also after the instructor set the student absent) makes the round present again.
       const res = await env.DB.prepare('INSERT INTO att_marks (class, round, email, self, present) VALUES (?, ?, ?, ?, 1) '
         + 'ON CONFLICT (class, round, email) DO UPDATE SET self = COALESCE(self, excluded.self), present = 1 WHERE present = 0')
-        .bind(key, open.id, real, new Date(now).toISOString()).run();
-      if (res.meta.changes) await attLog(env, key, real, 'present', 'round ' + open.id);
+        .bind(key, open.id, id, new Date(now).toISOString()).run();
+      if (res.meta.changes) await attLog(env, key, id, 'present', 'round ' + open.id + (id !== real ? ' (signed in as ' + real + ')' : ''));
     } else if (action === 'answer') {
-      if (!att.student(s, real)) throw new Error('This account is not on the class roster.');
+      if (!me) throw new Error('This account is not on the class roster.');
       const label = att.checkAnswer(s, args[0], args[1], now);
       await env.DB.prepare('INSERT OR REPLACE INTO att_answers (class, qid, email, answer, time) VALUES (?, ?, ?, ?, ?)')
-        .bind(key, String(args[0]), real, label, new Date(now).toISOString()).run();
-      await attLog(env, key, real, 'answer', label.slice(0, 100) + ' to question ' + args[0]);
+        .bind(key, String(args[0]), id, label, new Date(now).toISOString()).run();
+      await attLog(env, key, id, 'answer', label.slice(0, 100) + ' to question ' + args[0]);
     } else if (action !== 'state') throw new Error('Unknown action.');
   } catch (err) {
-    await attLog(env, key, real, 'refused: ' + action, err.message);
+    await attLog(env, key, id, 'refused: ' + action, err.message);
     throw err;
   }
   // The student's own marks of today's rounds (round ids start with the date).
   const marks = (await env.DB.prepare('SELECT round, COALESCE(self, edited) AS time FROM att_marks WHERE class = ? AND email = ? AND present = 1 AND round >= ? AND round < ?')
-    .bind(key, real, date + ' ', date + '~').all()).results;
+    .bind(key, id, date + ' ', date + '~').all()).results;
   const answers = s.questions.length
-    ? (await env.DB.prepare('SELECT qid, answer FROM att_answers WHERE class = ? AND email = ?').bind(key, real).all()).results : [];
-  const view = att.studentView(s, real, marks, now, id => answers.find(a => a.qid === id) || null);
+    ? (await env.DB.prepare('SELECT qid, answer FROM att_answers WHERE class = ? AND email = ?').bind(key, id).all()).results : [];
+  const view = att.studentView(s, id, marks, now, q => answers.find(a => a.qid === q) || null);
   // An instructor account that is not on the roster is sent to the instructor page instead of the roster error.
   if (!view.authorized && isAdmin(real, env)) view.instructor = true;
-  else if (!view.authorized) await attLog(env, key, real, 'refused: ' + action, 'This account is not on the class roster.');
+  else if (!view.authorized) await attLog(env, key, id, 'refused: ' + action, 'This account is not on the class roster.');
   return view;
 }
 
@@ -359,6 +361,21 @@ async function attAdminDo(env, real, who, action, key, args) {
     const after = s.roster.map(r => r.email);
     logs.push(['import roster', after.length + ' students; added: ' + (after.filter(e => before.indexOf(e) === -1).join(', ') || 'none')
       + '; dropped: ' + (before.filter(e => after.indexOf(e) === -1).join(', ') || 'none')]);
+  } else if (action === 'editStudent') {
+    const was = att.student(s, args[0]);
+    const r = att.ADMIN.editStudent(s, args[0], args[1], args[2], args[3], args[4]);
+    await writeAtt(env, key, s);
+    let moved = '';
+    if (r.from !== r.to) {
+      // Marks and answers follow the student to the new address; a round already recorded under the new address keeps that row.
+      const res = await env.DB.batch([
+        env.DB.prepare('UPDATE OR IGNORE att_marks SET email = ? WHERE class = ? AND email = ?').bind(r.to, key, r.from),
+        env.DB.prepare('DELETE FROM att_marks WHERE class = ? AND email = ?').bind(key, r.from),
+        env.DB.prepare('UPDATE OR IGNORE att_answers SET email = ? WHERE class = ? AND email = ?').bind(r.to, key, r.from),
+        env.DB.prepare('DELETE FROM att_answers WHERE class = ? AND email = ?').bind(key, r.from)]);
+      moved = '; address was ' + r.from + ', ' + res[0].meta.changes + ' marks moved';
+    }
+    logs.push(['edit student', name(r.to) + (was ? ', was ' + att.fullName(was) : '') + '; other addresses: ' + (r.alt.join(', ') || 'none') + moved]);
   } else if (action === 'saveSettings') {
     const before = JSON.stringify({ t: s.title, sch: s.schedule, skip: s.skip, p: s.points, code: s.code });
     att.ADMIN.saveSettings(s, args[0]);

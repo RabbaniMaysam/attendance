@@ -134,6 +134,27 @@ throws(() => att.ADMIN.addStudent(s, 'X', 'Y', 'not an email'), /not valid/, 'ba
 att.ADMIN.removeStudent(s, 'AardvarkA1@mail.montclair.edu');
 ok(s.roster.length === 2 && !att.student(s, 'aardvarka1@montclair.edu'), 'student removed by either domain');
 throws(() => att.ADMIN.removeStudent(s, 'nobody@x.edu'), /not on the roster/, 'removing an unknown student refused');
+// Editing a student: name, main address, other addresses that sign the student in.
+const keep = JSON.parse(JSON.stringify(s.roster));
+att.ADMIN.addStudent(s, 'Ada', 'Aardvark', 'aardvarka1');
+att.ADMIN.editStudent(s, 'aardvarka1@mail.montclair.edu', 'Ada', 'Aardvark-Lee', 'aardvarka1', 'ada.a@gmail.com, AardvarkA1@montclair.edu; Ada.A@gmail.com');
+ok(s.roster[0].last === 'Aardvark-Lee' && s.roster[0].email === 'aardvarka1@montclair.edu' && s.roster[0].alt.join() === 'ada.a@gmail.com',
+  'edit: name changed, other addresses lowercased and deduplicated, the main address not repeated among them');
+ok(att.student(s, 'Ada.A@gmail.com') === s.roster[0] && att.identity(s, 'ada.a@gmail.com') === 'aardvarka1@montclair.edu' && att.identity(s, 'nobody@x.edu') === 'nobody@x.edu',
+  'a sign-in with another address is the student, stored under the main address');
+throws(() => att.ADMIN.addStudent(s, 'X', 'Y', 'ada.a@gmail.com'), /on the roster/, 'an address in use cannot be added as a new student');
+throws(() => att.ADMIN.editStudent(s, keep[0].email, 'A', 'B', keep[0].email, 'ada.a@gmail.com'), /belongs to Ada Aardvark-Lee/, 'an address in use cannot be given to another student');
+throws(() => att.ADMIN.editStudent(s, 'aardvarka1', '', '', 'aardvarka1', ''), /name/, 'edit needs a name');
+throws(() => att.ADMIN.editStudent(s, 'aardvarka1', 'Ada', 'Aardvark', 'aardvarka1', 'ada.a@gmail.com, bad@nodomain'), /"bad@nodomain" is not valid/, 'a bad other address is refused');
+ok(s.roster[0].alt.join() === 'ada.a@gmail.com', 'a refused edit changes nothing');
+throws(() => att.ADMIN.editStudent(s, 'nobody@x.edu', 'A', 'B', 'nobody@x.edu', ''), /not on the roster/, 'editing an unknown student refused');
+const mv = att.ADMIN.editStudent(s, 'ada.a@gmail.com', 'Ada', 'Aardvark', 'ada2@x.edu', '');
+ok(mv.from === 'aardvarka1@montclair.edu' && mv.to === 'ada2@x.edu' && mv.alt.length === 0 && !s.roster.find(r => r.email === 'ada2@x.edu').alt && !att.student(s, 'ada.a@gmail.com') && !att.student(s, 'aardvarka1'),
+  'edit by another address: the main address changed and reported, the other addresses cleared');
+att.ADMIN.editStudent(s, 'ada2@x.edu', 'Ada', 'Aardvark', 'ada2@x.edu', ['ada.a@gmail.com']);
+att.ADMIN.importRoster(s, 'first,last,email\nAda,Aardvark,ada2@x.edu\nNew,Person,np@x.edu');
+ok(s.roster.length === 2 && att.student(s, 'ada.a@gmail.com').email === 'ada2@x.edu' && !s.roster[1].alt, 'import keeps the other addresses of a student who stays');
+s.roster = keep;
 
 // in-class questions (the student on the roster is khanj6@montclair.edu; a Tuesday during class)
 const t0 = edt('2026-10-06', '08:10');

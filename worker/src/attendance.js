@@ -277,8 +277,21 @@ export function report(s, roundsList, marks, ms) {
   return { dates: dates, perSession: perSession, total: perSession * n, sessions: dates.map(d => byDate[d]), students: students };
 }
 
-export function student(s, email) { return s.roster.find(r => r.email === canonEmail(email)) || null; }
+/** The roster entry whose address, or one of whose other addresses (alt), is `email`. Marks are stored under the entry's main address. */
+export function student(s, email) {
+  const m = canonEmail(email);
+  return s.roster.find(r => r.email === m || (r.alt || []).indexOf(m) !== -1) || null;
+}
+/** The address a sign-in is stored under: the student's main address, or the address itself when it is not on the roster. */
+export function identity(s, email) { const r = student(s, email); return r ? r.email : canonEmail(email); }
 export const fullName = r => (r.first + ' ' + r.last).trim();
+/** An address as stored: lowercased, a Montclair login ID alone (the part before the @) completed, the shape checked. */
+const fullMail = e => {
+  let m = canonEmail(e);
+  if (m && !m.includes('@')) m += '@montclair.edu';
+  if (!/^\S+@\S+\.\S+$/.test(m)) throw new Error('The address "' + text(e) + '" is not valid.');
+  return m;
+};
 
 // ---------------------------------------------------------------- student view
 
@@ -442,22 +455,44 @@ export const ADMIN = {
     delete s.closed[roundId(date, open)]; delete s.extended[roundId(date, open)];
   },
 
-  /** Replaces the roster (layouts: see parseRoster in rules.js). Marks of dropped students are kept in att_marks. */
+  /** Replaces the roster (layouts: see parseRoster in roster.js). Marks of dropped students are kept in att_marks; the other addresses of students who stay are kept. */
   importRoster(s, csv) {
+    const old = s.roster;
     s.roster = parseRoster(csv);
+    s.roster.forEach(r => { const o = old.find(x => x.email === r.email); if (o && o.alt) r.alt = o.alt; });
     sortRoster(s);
   },
 
   /** Adds one student. The email may be the Montclair login ID alone (the part before the @). */
   addStudent(s, first, last, email) {
     first = text(first); last = text(last);
-    let mail = canonEmail(email);
-    if (mail && !mail.includes('@')) mail = mail + '@montclair.edu';
-    if (!/^\S+@\S+\.\S+$/.test(mail)) throw new Error('That email address is not valid.');
+    const mail = fullMail(email);
     if (!first && !last) throw new Error('A name is needed.');
     if (student(s, mail)) throw new Error(mail + ' is on the roster.');
     s.roster.push({ first: first, last: last, email: mail });
     sortRoster(s);
+  },
+
+  /**
+   * Changes one student's name, main address, or other addresses (alt: a list or a comma-separated string; a sign-in
+   * with any of them is this student, and the marks stay under the main address). The student is found by any current
+   * address. Returns {from, to, alt}; the Worker moves the marks when from and to differ.
+   */
+  editStudent(s, email, first, last, newEmail, alt) {
+    const r = student(s, email) || (canonEmail(email).includes('@') ? null : student(s, canonEmail(email) + '@montclair.edu'));
+    if (!r) throw new Error(canonEmail(email) + ' is not on the roster.');
+    first = text(first); last = text(last);
+    if (!first && !last) throw new Error('A name is needed.');
+    const mail = fullMail(newEmail);
+    const others = (Array.isArray(alt) ? alt : String(alt || '').split(/[\s,;]+/)).filter(Boolean).map(fullMail)
+      .filter((a, i, all) => a !== mail && all.indexOf(a) === i);
+    const taken = [mail].concat(others).find(a => { const o = student(s, a); return o && o !== r; });
+    if (taken) throw new Error(taken + ' belongs to ' + fullName(student(s, taken)) + '.');
+    const from = r.email;
+    r.first = first; r.last = last; r.email = mail;
+    if (others.length) r.alt = others; else delete r.alt;
+    sortRoster(s);
+    return { from: from, to: mail, alt: others };
   },
 
   /** Removes one student. Marks are kept in att_marks but no longer shown. */

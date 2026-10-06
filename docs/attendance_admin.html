@@ -1129,15 +1129,41 @@
     card.appendChild(el('div', { class: 'row', style: 'margin-top:10px' }, el('span', { class: 'muted', text: 'Add one student:' }), aFirst, aLast, aMail,
       button('Add', 'plain', function () { run('addStudent', [aFirst.value, aLast.value, aMail.value], 'Student added.'); })));
     if (!S.roster.length) return;
-    var t = el('table', {}, el('tr', {}, el('th', { text: 'Last name' }), el('th', { text: 'First name' }), el('th', { text: 'Email' }), el('th', {})));
+    card.appendChild(el('p', { class: 'muted', text: 'Edit changes a student\'s name or address (the marks follow the address) and lists other addresses, such as a personal Gmail, that sign the student in as the same person.' }));
+    var t = el('table', {}, el('tr', {}, el('th', { text: 'Last name' }), el('th', { text: 'First name' }), el('th', { text: 'Email' }), el('th', { text: 'Other addresses' }), el('th', {})));
     S.roster.forEach(function (r) {
-      t.appendChild(el('tr', {}, el('td', { text: r.last }), el('td', { text: r.first }), el('td', { text: r.email }),
-        el('td', {}, button('Remove', 'danger', function () {
-          ask('Remove ' + fullName(r) + '?', ['The student can no longer mark attendance. Existing marks stay in the database but are no longer shown.'], 'Remove', true)
-            .then(function (yes) { if (yes) run('removeStudent', [r.email], fullName(r) + ' removed.'); });
-        }))));
+      if (rosterEdit && rosterEdit.email === r.email) { t.appendChild(editRow(r)); return; }
+      t.appendChild(el('tr', {}, el('td', { text: r.last }), el('td', { text: r.first }), el('td', { text: r.email }), el('td', { class: 'muted', text: (r.alt || []).join(', ') }),
+        el('td', {}, button('Edit', 'plain', function () { rosterEdit = { email: r.email, first: r.first, last: r.last, mail: r.email, alt: (r.alt || []).join(', ') }; render(); }), ' ',
+          button('Remove', 'danger', function () {
+            ask('Remove ' + fullName(r) + '?', ['The student can no longer mark attendance. Existing marks stay in the database but are no longer shown.'], 'Remove', true)
+              .then(function (yes) { if (yes) run('removeStudent', [r.email], fullName(r) + ' removed.'); });
+          }))));
     });
     card.appendChild(t);
+  }
+
+  /** The roster row being edited: the typed values live in rosterEdit, so redraws and a refused save keep them. */
+  var rosterEdit = null;
+  function editRow(r) {
+    var d = rosterEdit;
+    var field = function (k, size, placeholder) {
+      var i = el('input', { type: 'text', value: d[k], size: size, placeholder: placeholder || false });
+      i.addEventListener('input', function () { d[k] = i.value; });
+      i.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') save(); });
+      return i;
+    };
+    var save = function () {
+      var go = function () {
+        busy = true; flash = null; render();
+        call('editStudent', [r.email, d.first, d.last, d.mail, d.alt]).then(function (data) { busy = false; rosterEdit = null; setD(data); flash = { ok: fullName(r) + ' updated.' }; render(); }).catch(fail);
+      };
+      if (d.mail.trim().toLowerCase() === r.email) { go(); return; }
+      ask('Change the address of ' + fullName(r) + '?', ['Marks recorded under ' + r.email + ' are moved to ' + d.mail.trim() + '.'], 'Save', false).then(function (yes) { if (yes) go(); });
+    };
+    return el('tr', {}, el('td', {}, field('last', 12)), el('td', {}, field('first', 12)), el('td', {}, field('mail', 22)),
+      el('td', {}, field('alt', 30, 'other addresses, comma-separated')),
+      el('td', {}, button('Save', '', save), ' ', button('Cancel', 'plain', function () { rosterEdit = null; render(); })));
   }
 
   boot();

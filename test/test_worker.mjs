@@ -182,6 +182,18 @@ r = await att('removeStudent', ['asha1@mail.montclair.edu']);
 ok(r.ok && r.data.state.roster.length === 1, 'student removed');
 // in-class questions
 await att('importRoster', ['first,last,email\nF1,L1,' + m(1) + '\nF2,L2,' + m(2)]);
+// Editing a student: the name, the main address (marks follow it), other addresses that sign the student in.
+r = await att('get');
+const n1 = r.data.marks.filter(x => x.email === m(1)).length;
+r = await att('editStudent', [m(1), 'F1', 'L1-edited', 'n1@x.edu', 'g1@gmail.com, G1@gmail.com']);
+ok(r.ok && n1 > 0 && r.data.state.roster.find(x => x.email === 'n1@x.edu').last === 'L1-edited' && r.data.state.roster.find(x => x.email === 'n1@x.edu').alt.join() === 'g1@gmail.com'
+  && r.data.marks.filter(x => x.email === 'n1@x.edu').length === n1 && !r.data.marks.some(x => x.email === m(1)), 'student edited: name, address, other address; the marks moved to the new address');
+r = await post('/att', { token: token('G1@gmail.com'), class: AK, action: 'state' });
+ok(r.ok && r.state.authorized === true && r.state.email === 'n1@x.edu' && r.state.name === 'F1 L1-edited', 'a sign-in with the other address is the same student');
+ok(/belongs to F1 L1-edited/.test((await att('editStudent', [m(2), 'F2', 'L2', m(2), 'g1@gmail.com'])).error), 'an address in use by another student is refused');
+r = await att('editStudent', ['g1@gmail.com', 'F1', 'L1', m(1), '']);
+ok(r.ok && r.data.state.roster.find(x => x.email === m(1)) && !r.data.state.roster.find(x => x.email === m(1)).alt && r.data.marks.filter(x => x.email === m(1)).length === n1
+  && (await post('/att', { token: token('g1@gmail.com'), class: AK, action: 'state' })).state.authorized === false, 'edited back by the other address; the marks moved back, the other address no longer signs in');
 r = await attStu(1, 'state');
 ok(r.ok && r.state.question === null, 'no question in the lobby');
 r = await att('askQuestion', ['mc', 4, 'Which curve?', 'C', 2]);

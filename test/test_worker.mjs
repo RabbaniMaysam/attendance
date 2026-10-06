@@ -98,9 +98,17 @@ ok(/not open/.test((await attStu(1, 'mark')).error), 'mark refused while closed'
 r = await att('openNow', [5]);
 ok(r.ok && r.data.open && r.data.state.extra.length === 1 && /^[0-9a-f]{32}$/.test(r.data.secret) && r.data.state.secret === undefined && r.data.now,
   'open now adds a window, reports open with the secret and the clock (the secret is not in the state)');
-const code = () => attMod.sessionCode({ secret: r.data.secret }, attMod.codeSlot(Date.now()));
-ok(/Wrong session code/.test((await attStu(1, 'mark', [attMod.sessionCode({ secret: r.data.secret }, attMod.codeSlot(Date.now()) + 2)])).error) && /Wrong session code/.test((await attStu(1, 'mark')).error), 'wrong or missing code refused');
-ok((await attStu(1, 'state')).state.needCode === true, 'the student page is told a code is needed');
+const code = () => attMod.sessionCode({ secret: r.data.secret }, attMod.codeSlot(Date.now(), r.data.state));
+ok(r.data.state.codeSec === 6, 'the code interval is 6 seconds by default');
+ok(/Wrong session code/.test((await attStu(1, 'mark', [attMod.sessionCode({ secret: r.data.secret }, attMod.codeSlot(Date.now(), r.data.state) + 2)])).error) && /Wrong session code/.test((await attStu(1, 'mark')).error), 'wrong or missing code refused');
+ok((await attStu(1, 'state')).state.needCode === true && (await attStu(1, 'state')).state.codeSec === 6, 'the student page is told a code is needed and its interval');
+// A 20-second interval: the Worker and the page's copy of the hash agree on the slot, and the 6-second code is refused.
+r = await att('saveSettings', [{ title: 'Attendance test', days: [], open: '07:50', close: '08:01', skip: '', codeSec: '20' }]);
+ok(r.ok && r.data.state.codeSec === 20 && (await attStu(1, 'state')).state.codeSec === 20, 'interval saved as 20 seconds');
+ok(/every 20 seconds/.test((await attStu(1, 'mark', [attMod.sessionCode({ secret: r.data.secret }, Math.floor(Date.now() / 6000))])).error), 'the 6-second code is refused with the interval in the message');
+ok(/from 3 to 300/.test((await att('saveSettings', [{ title: 'Attendance test', days: [], open: '07:50', close: '08:01', skip: '', codeSec: '1' }])).error), 'a 1-second interval is refused');
+r = await att('saveSettings', [{ title: 'Attendance test', days: [], open: '07:50', close: '08:01', skip: '', codeSec: '6' }]);
+ok(r.ok && r.data.state.codeSec === 6, 'back to 6 seconds');
 let rs = await attStu(1, 'mark', [code()]);
 ok(rs.ok && rs.state.marked && rs.state.open, 'student marked present with the code');
 const firstMark = rs.state.marked;

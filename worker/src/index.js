@@ -377,10 +377,10 @@ async function attAdminDo(env, real, who, action, key, args) {
     }
     logs.push(['edit student', name(r.to) + (was ? ', was ' + att.fullName(was) : '') + '; other addresses: ' + (r.alt.join(', ') || 'none') + moved]);
   } else if (action === 'saveSettings') {
-    const before = JSON.stringify({ t: s.title, sch: s.schedule, skip: s.skip, p: s.points, code: s.code });
+    const before = JSON.stringify({ t: s.title, sch: s.schedule, skip: s.skip, p: s.points, code: s.code, codeSec: s.codeSec });
     att.ADMIN.saveSettings(s, args[0]);
     await writeAtt(env, key, s);
-    const after = JSON.stringify({ t: s.title, sch: s.schedule, skip: s.skip, p: s.points, code: s.code });
+    const after = JSON.stringify({ t: s.title, sch: s.schedule, skip: s.skip, p: s.points, code: s.code, codeSec: s.codeSec });
     if (after !== before) logs.push(['save settings', after]);
   } else if (Object.prototype.hasOwnProperty.call(att.ADMIN, action)) {
     const before = s.roster.slice();

@@ -94,7 +94,7 @@
     .qrstatus { font-size: 22px; margin: 0 0 6px; color: var(--ok); }
     .qrcode { font-size: 44px; font-weight: 700; margin: 6px 0; letter-spacing: 4px; }
     .qrcode small { font-size: 22px; font-weight: 500; letter-spacing: 0; color: var(--muted); margin-right: 12px; }
-    /* the bar beside the session code: full when a new code appears, empty when it changes (6 seconds) */
+    /* the bar beside the session code: full when a new code appears, empty when it changes (the class's interval, 6 seconds by default) */
     .codebar { display: inline-block; width: 140px; height: 14px; margin-left: 16px; vertical-align: middle; border-radius: 7px; background: #e3e7ec; overflow: hidden; }
     .codebar div { height: 100%; background: var(--accent); border-radius: 7px; }
   </style>
@@ -150,8 +150,9 @@
   function setD(d) { D = d; if (d && d.now) clockOffset = Date.parse(d.now) - Date.now(); }
   function serverNow() { return Date.now() + clockOffset; }
 
-  // The session code: a copy of sessionCode in worker/src/attendance.js (cyrb53 hash of the class's secret and the 6-second slot).
-  var CODE_MS = 6000;
+  // The session code: a copy of sessionCode in worker/src/attendance.js (cyrb53 hash of the class's secret and the slot number,
+  // the server clock divided by the class's interval: codeSec seconds, set on the Settings tab, 6 by default).
+  function codeSec() { return D && D.state.codeSec > 0 ? D.state.codeSec : 6; }
   function sessionCode(secret, slot) {
     var str = String(secret || '') + '|' + slot, h1 = 0xdeadbeef, h2 = 0x41c6ce57;
     for (var i = 0; i < str.length; i++) {
@@ -353,7 +354,7 @@
   function settingsOf(S) {
     return { title: S.title, days: S.schedule.days.slice(), open: S.schedule.open, close: S.schedule.close,
              start: S.schedule.start || '', end: S.schedule.end || '', skip: S.skip.join('\n'),
-             pointsMode: S.points.mode, points: String(S.points.value), code: !!S.code };
+             pointsMode: S.points.mode, points: String(S.points.value), code: !!S.code, codeSec: String(S.codeSec > 0 ? S.codeSec : 6) };
   }
   /** Resolves true when it is fine to leave the Settings form (nothing to save, saved, or discarded), false to stay. */
   function leaveSettings() {
@@ -417,21 +418,21 @@
 
   /**
    * The session code line, shown wherever the QR code is: "Session code 1224" and a bar that empties over the
-   * code's 6 seconds and refills when the next code appears. Updates itself ten times a second until removed.
+   * code's interval and refills when the next code appears. Updates itself ten times a second until removed.
    * Shown whether or not a round is open (the code is only checked while one is).
    */
   function codeLine(cls) {
     var e = el('p', { class: cls });
     if (!D || !D.state.code) return e;
     var num = document.createTextNode(''), bar = el('div'), slot = -1, shown = false;
-    e.appendChild(el('small', { text: 'Session code' })); e.appendChild(num); e.appendChild(el('span', { class: 'codebar', title: 'The code changes every 6 seconds.' }, bar));
+    e.appendChild(el('small', { text: 'Session code' })); e.appendChild(num); e.appendChild(el('span', { class: 'codebar', title: 'The code changes every ' + codeSec() + ' seconds.' }, bar));
     var tick = function () {
       // The element is created before it is put on the page; stop ticking once it has been on the page and is removed.
       if (document.contains(e)) shown = true;
       else if (shown) { clearInterval(iv); return; }
-      var ms = serverNow(), k = Math.floor(ms / CODE_MS);
+      var ms = serverNow(), codeMs = codeSec() * 1000, k = Math.floor(ms / codeMs);
       if (k !== slot) { slot = k; num.textContent = sessionCode(D.secret, k); }
-      bar.style.width = (100 * (1 - (ms - k * CODE_MS) / CODE_MS)) + '%';
+      bar.style.width = (100 * (1 - (ms - k * codeMs) / codeMs)) + '%';
     };
     var iv = setInterval(tick, 100);
     tick();
@@ -497,7 +498,7 @@
   function qrTab(card) {
     card.appendChild(liveStatus('banner ' + (D.open ? 'ok' : 'note')));
     card.appendChild(el('div', { class: 'row', style: 'margin-top:12px' }, button('Open in a new tab', '', showQr),
-      el('span', { class: 'muted', text: 'Opens a tab with the QR code, the link, the session code, and the live status: drag it to the projector screen (F11 for full screen) and keep this tab on your monitor. Every tab opened this way shows the same QR code and session code; it works during attendance and questions alike.' + (D.state.code ? ' The session code changes every 6 seconds (the bar shows the time left); students type the code on the screen, and may retry until attendance closes.' : '') })));
+      el('span', { class: 'muted', text: 'Opens a tab with the QR code, the link, the session code, and the live status: drag it to the projector screen (F11 for full screen) and keep this tab on your monitor. Every tab opened this way shows the same QR code and session code; it works during attendance and questions alike.' + (D.state.code ? ' The session code changes every ' + codeSec() + ' seconds (the bar shows the time left; the interval is set on the Settings tab); students type the code on the screen, and may retry until attendance closes.' : '') })));
     var holder = el('div', { style: 'text-align:center; margin-top:8px' });
     card.appendChild(holder);
     withQr(function () {
@@ -877,15 +878,16 @@
     pmode.value = v.pointsMode;
     var pval = el('input', { type: 'number', min: 0, max: 1000, step: 'any', value: v.points, style: 'width:90px' });
     var codeCb = el('input', { type: 'checkbox' }); codeCb.checked = v.code;
+    var codeSecIn = el('input', { type: 'number', min: 3, max: 300, step: 1, value: v.codeSec, style: 'width:70px' });
     var form = function () {
       return { title: title.value, days: days.filter(function (d) { return d.cb.checked; }).map(function (d) { return d.i; }),
                open: open.value, close: close.value, start: start.value, end: end.value, skip: skip.value,
-               pointsMode: pmode.value, points: pval.value, code: codeCb.checked };
+               pointsMode: pmode.value, points: pval.value, code: codeCb.checked, codeSec: codeSecIn.value };
     };
     // Every edit updates the draft, so the form survives redraws and the tab-change check sees it.
     var note = el('span', { class: 'muted', text: settingsDirty() ? 'Unsaved changes.' : '' });
     var edited = function () { settingsDraft = form(); note.textContent = settingsDirty() ? 'Unsaved changes.' : ''; };
-    [title, open, close, start, end, skip, pmode, pval, codeCb].concat(days.map(function (d) { return d.cb; })).forEach(function (inp) {
+    [title, open, close, start, end, skip, pmode, pval, codeCb, codeSecIn].concat(days.map(function (d) { return d.cb; })).forEach(function (inp) {
       inp.addEventListener('input', edited);
       inp.addEventListener('change', edited);
     });
@@ -900,7 +902,8 @@
       el('dt', { text: 'Last class day' }), el('dd', {}, end, ' ', el('span', { class: 'muted', text: 'optional; no windows after it' })),
       el('dt', { text: 'No class on' }), el('dd', {}, skip, el('div', { class: 'muted', text: 'One date per line, YYYY-MM-DD (holidays, cancelled classes). No window opens on these days and they are not sessions. A day that did have a window but should not count is excluded instead ("Exclude dates" on the Attendance tab, or the Reports tab).' })),
       el('dt', { text: 'Session code' }), el('dd', {}, el('label', {}, codeCb, 'students must type the 4-digit session code'),
-        el('div', { class: 'muted', text: 'The code is shown with the QR code (QR code tab and full screen) and changes every 6 seconds, so a code relayed to someone outside the room is stale by the time it arrives. A code is accepted for 6 to 12 seconds after it appears; a wrong code can be retried without limit.' }))));
+        el('label', { style: 'margin-left:14px' }, 'that changes every ', codeSecIn, ' seconds'),
+        el('div', { class: 'muted', text: 'The code is shown with the QR code (QR code tab and full screen) and changes at the interval set here (3 to 300 seconds; 6 by default), so a code relayed to someone outside the room is stale by the time it arrives. A code is accepted for one to two intervals after it appears (the current code and the previous one); a wrong code can be retried without limit. A longer interval is easier to type and easier to relay.' }))));
     card.appendChild(el('h2', { text: 'Attendance points', style: 'margin-top:18px' }));
     card.appendChild(el('dl', {},
       el('dt', { text: 'Points' }), el('dd', {}, pval, ' ', pmode),

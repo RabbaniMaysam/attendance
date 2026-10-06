@@ -69,15 +69,18 @@ export function randomSecret() {
 }
 
 /**
- * The 4-digit session code shown with the QR code and typed by students. It changes every CODE_MS
- * (6 s), like a two-step verification code: a hash of the class's secret and the 6-second slot,
- * so it cannot be guessed from earlier codes and is hard to relay to someone outside the room.
- * The instructor page computes it with a copy of this function (it receives the secret and the
- * server clock); the Worker accepts the current slot and the previous one, so a code is valid for
- * 6 to 12 seconds after it appears (typing takes a few seconds; a wrong code can be retried). (cyrb53 hash.)
+ * The 4-digit session code shown with the QR code and typed by students. It changes every codeSec
+ * seconds (a class setting, CODE_SEC_DEFAULT when unset), like a two-step verification code: a hash
+ * of the class's secret and the slot number (the server clock divided by the interval), so it cannot
+ * be guessed from earlier codes and is hard to relay to someone outside the room. The instructor page
+ * computes it with a copy of this function (it receives the secret, the interval, and the server clock);
+ * the Worker accepts the current slot and the previous one, so a code is valid for one to two intervals
+ * after it appears (typing takes a few seconds; a wrong code can be retried). (cyrb53 hash.)
  */
-export const CODE_MS = 6000;
-export const codeSlot = ms => Math.floor(ms / CODE_MS);
+export const CODE_SEC_DEFAULT = 6, CODE_SEC_MIN = 3, CODE_SEC_MAX = 300;
+export const codeSec = s => (s && s.codeSec > 0 ? s.codeSec : CODE_SEC_DEFAULT);
+export const codeMs = s => codeSec(s) * 1000;
+export const codeSlot = (ms, s) => Math.floor(ms / codeMs(s));
 export function sessionCode(s, slot) {
   const str = String(s.secret || '') + '|' + slot;
   let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
@@ -311,6 +314,7 @@ export function studentView(s, email, marks, ms, answerOf) {
     date: nyParts(ms).date,
     open: open,                                   // {id, date, open, close, closesAt} or null
     needCode: !!s.code,                           // the student must type the round's session code
+    codeSec: codeSec(s),                          // seconds between codes (shown in the code field's label)
     marked: mine ? mine.time : '',                // ISO time of the mark in the open round, or ''
     today: (marks || []).map(m => m.time).sort(), // ISO times of all of today's marks
     next: open ? null : nextWindow(s, ms),
@@ -319,12 +323,12 @@ export function studentView(s, email, marks, ms, answerOf) {
   };
 }
 
-/** Checks the session code a student typed (when the class requires one): the current 10-second code or the previous one. */
+/** Checks the session code a student typed (when the class requires one): the current code or the previous one. */
 export function checkCode(s, code, nowMs) {
   if (!s.code) return;
-  const typed = String(code ?? '').trim(), slot = codeSlot(nowMs);
+  const typed = String(code ?? '').trim(), slot = codeSlot(nowMs, s);
   if (typed !== sessionCode(s, slot) && typed !== sessionCode(s, slot - 1)) {
-    throw new Error('Wrong session code. The code changes every 6 seconds: type the one on the screen now.');
+    throw new Error('Wrong session code. The code changes every ' + codeSec(s) + ' seconds: type the one on the screen now.');
   }
 }
 
@@ -362,7 +366,12 @@ export const ADMIN = {
     const mode = v.pointsMode === undefined ? old.mode : (v.pointsMode === 'per' ? 'per' : 'total');
     const value = Number(v.points === undefined || v.points === '' ? old.value : v.points);
     if (!(value >= 0 && value <= 1000)) throw new Error('Attendance points must be a number from 0 to 1000.');
+    const sec = v.codeSec === undefined || v.codeSec === '' ? codeSec(s) : Number(v.codeSec);
+    if (!(Number.isInteger(sec) && sec >= CODE_SEC_MIN && sec <= CODE_SEC_MAX)) {
+      throw new Error('The session code interval must be a whole number of seconds from ' + CODE_SEC_MIN + ' to ' + CODE_SEC_MAX + '.');
+    }
     s.title = title;
+    s.codeSec = sec;
     s.schedule = { days: days.sort(), open: open, close: close, start: start, end: end };
     s.skip = skip.filter((d, i) => skip.indexOf(d) === i).sort();
     s.points = { mode: mode, value: value };
@@ -574,6 +583,7 @@ export function upgradeAtt(s) {
   s.roster = s.roster || []; s.skip = s.skip || []; s.extra = s.extra || []; s.questions = s.questions || []; s.closed = s.closed || {};
   s.extended = s.extended || {}; s.exclude = s.exclude || []; s.removed = s.removed || []; s.backupAt = s.backupAt || '';
   if (s.code === undefined) s.code = true;
+  if (!(s.codeSec > 0)) s.codeSec = CODE_SEC_DEFAULT;
   // The secret is created on the first read of an older class; the Worker writes the state back (see readAtt).
   s.schedule = Object.assign({}, DEFAULT_SCHEDULE, s.schedule || {});
   s.points = Object.assign({ mode: 'total', value: 0 }, s.points || {});

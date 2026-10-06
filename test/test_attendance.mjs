@@ -295,8 +295,8 @@ att.ADMIN.removeExtra(g, '2026-09-16', '23:57');
 ok(!('2026-09-16 23:57' in g.extended), 'removing the window drops its extension');
 
 // ---- session codes: 4 digits, one per 6-second slot, different between slots and classes, off when the setting is off
-const slot = att.codeSlot(during), SL = att.CODE_MS;
-ok(SL === 6000 && slot === Math.floor(during / 6000) && att.codeSlot(during + 5999) === slot && att.codeSlot(during + 6000) === slot + 1, 'a slot is 6 seconds');
+const slot = att.codeSlot(during, g), SL = att.codeMs(g);
+ok(SL === 6000 && g.codeSec === 6 && slot === Math.floor(during / 6000) && att.codeSlot(during + 5999, g) === slot && att.codeSlot(during + 6000, g) === slot + 1, 'a slot is 6 seconds by default');
 const c1 = att.sessionCode(g, slot);
 ok(/^\d{4}$/.test(c1) && c1 === att.sessionCode(g, slot), 'a 4-digit code, the same on every call: ' + c1);
 const many = [0, 1, 2, 3, 4, 5].map(k => att.sessionCode(g, slot + k));
@@ -320,6 +320,25 @@ att.checkCode(g, '', during);
 ok(g.code === false && att.studentView(g, 'a@x.edu', [], during).needCode === false, 'codes switched off: nothing is checked');
 att.ADMIN.saveSettings(g, { title: 'ECON 102', days: [2, 4], open: '07:50', close: '08:05', start: '2026-09-01', end: '2026-09-29', skip: '2026-09-08' });
 ok(g.code === false, 'saving without the code field keeps the setting');
+// ---- the interval between codes is a setting: slots, validity, and the error text follow it
+const base = { title: 'ECON 102', days: [2, 4], open: '07:50', close: '08:05', start: '2026-09-01', end: '2026-09-29', skip: '2026-09-08', code: true };
+att.ADMIN.saveSettings(g, Object.assign({ codeSec: '30' }, base));
+ok(g.codeSec === 30 && att.codeMs(g) === 30000 && att.studentView(g, 'a@x.edu', [], during).codeSec === 30, 'a 30-second interval is saved and sent to the student page');
+const slot30 = att.codeSlot(during, g), c30 = att.sessionCode(g, slot30);
+ok(slot30 === Math.floor(during / 30000) && att.codeSlot(during + 29999, g) === slot30, 'a slot is 30 seconds');
+att.checkCode(g, c30, during + 2 * 30000 - 1 - (during % 30000));
+ok(true, 'the code passes through its slot and the next one');
+throws(() => att.checkCode(g, c30, during + 2 * 30000 - (during % 30000)), /Wrong session code\. The code changes every 30 seconds/, 'refused two slots later, with the interval in the message');
+throws(() => att.checkCode(g, att.sessionCode(g, Math.floor(during / 6000)), during), /Wrong session code/, 'the 6-second code is not accepted once the interval is 30');
+att.ADMIN.saveSettings(g, base);
+ok(g.codeSec === 30, 'saving without the interval field keeps it');
+['2', '301', '6.5', 'x'].forEach(bad => throws(() => att.ADMIN.saveSettings(g, Object.assign({ codeSec: bad }, base)), /whole number of seconds from 3 to 300/, 'interval "' + bad + '" refused'));
+ok(g.codeSec === 30, 'a refused save changes nothing');
+att.ADMIN.saveSettings(g, Object.assign({ codeSec: 6 }, base));
+ok(g.codeSec === 6 && att.codeSlot(during, g) === slot, 'back to 6 seconds');
+const old = att.upgradeAtt({ title: 'Old' });
+ok(old.codeSec === 6 && att.codeMs(old) === 6000 && att.codeMs({}) === 6000, 'an older class without the setting uses 6 seconds');
+att.ADMIN.saveSettings(g, Object.assign({ code: false }, base));
 att.ADMIN.noteBackup(g, mid);
 ok(g.backupAt === new Date(mid).toISOString(), 'backup noted');
 

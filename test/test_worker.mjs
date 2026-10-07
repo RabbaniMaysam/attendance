@@ -66,6 +66,11 @@ ok(r.ok && r.data.key === AK && (await (await fetch(API + '/att/config')).json()
 ok(/exists/.test((await att('createClass', [AK, 'again'], '')).error), 'duplicate class key refused');
 r = await att('importRoster', ['first,last,email\nF1,L1,' + m(1) + '\nF2,L2,' + m(2)]);
 ok(r.ok && r.data.state.roster.length === 2 && r.data.state.schedule.open === '07:50', 'attendance roster imported, default schedule');
+r = await att('previewRoster', ['first,last,email\nF1,L1,' + m(1)]);
+ok(r.ok && r.data.file === 1 && r.data.matched === 1 && r.data.added.length === 0 && r.data.missing.map(x => x.email).join() === m(2)
+  && (await att('get')).data.state.roster.length === 2, 'roster preview lists the student not in the file and changes nothing');
+r = await att('importRoster', ['first,last,email\nF1,L1,' + m(1), [m(2)]]);
+ok(r.ok && r.data.state.roster.length === 2, 'import keeps the student the instructor chose to keep');
 ok((await attStu(9, 'state')).state.authorized === false, 'account outside the attendance roster is blocked');
 ok(!(await attStu(9, 'state')).state.instructor, 'a blocked student is not flagged as an instructor');
 r = await post('/att', { token: PROF, class: AK, action: 'state' });

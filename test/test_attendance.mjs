@@ -154,6 +154,18 @@ ok(mv.from === 'aardvarka1@montclair.edu' && mv.to === 'ada2@x.edu' && mv.alt.le
 att.ADMIN.editStudent(s, 'ada2@x.edu', 'Ada', 'Aardvark', 'ada2@x.edu', ['ada.a@gmail.com']);
 att.ADMIN.importRoster(s, 'first,last,email\nAda,Aardvark,ada2@x.edu\nNew,Person,np@x.edu');
 ok(s.roster.length === 2 && att.student(s, 'ada.a@gmail.com').email === 'ada2@x.edu' && !s.roster[1].alt, 'import keeps the other addresses of a student who stays');
+// Import with a choice: a preview lists the students not in the file; the ones the instructor keeps stay unchanged.
+const csvK = 'first,last,email\nNew,Person,NP@x.edu\nZed,Zulu,zz@x.edu';
+const pv = att.previewRoster(s.roster, csvK);
+ok(pv.file === 2 && pv.matched === 1 && pv.added.map(r => r.email).join() === 'zz@x.edu' && pv.missing.map(r => r.email).join() === 'ada2@x.edu' && s.roster.length === 2,
+  'preview: file count, matched, new, and missing students; nothing changes');
+att.ADMIN.importRoster(s, csvK, ['ADA2@x.edu']);
+ok(s.roster.map(r => r.email).join() === 'ada2@x.edu,np@x.edu,zz@x.edu' && att.student(s, 'ada.a@gmail.com').email === 'ada2@x.edu', 'a kept student stays, with the other addresses, sorted by last name');
+att.ADMIN.importRoster(s, 'first,last,email\nAl,Gmail,ada.a@gmail.com\nNew,Person,np@x.edu', ['ada2@x.edu']);
+ok(s.roster.map(r => r.email).join() === 'ada2@x.edu,ada.a@gmail.com,np@x.edu' && !s.roster[0].alt && att.student(s, 'ada.a@gmail.com').first === 'Al',
+  'a kept student loses another address that a file row now uses');
+att.ADMIN.importRoster(s, csvK);
+ok(s.roster.map(r => r.email).join() === 'np@x.edu,zz@x.edu', 'without a keep list (older page) every student not in the file is dropped');
 s.roster = keep;
 
 // in-class questions (the student on the roster is khanj6@montclair.edu; a Tuesday during class)

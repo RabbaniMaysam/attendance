@@ -348,6 +348,62 @@
     return choose(title, lines, [{ label: okLabel, value: true, cls: danger ? 'danger solid' : '' }]).then(function (v) { return v === true; });
   }
 
+  /**
+   * The roster import dialog. p is the Worker's previewRoster answer: the file's student count, how many are on the
+   * roster, the new students, and the students on the roster but not in the file, each listed with a checkbox
+   * (checked keeps the student, unchecked drops). Resolves the emails to keep, or null on Cancel, Esc, or a click outside.
+   */
+  function importChoice(p, dropNote) {
+    return new Promise(function (resolve) {
+      var veil;
+      var done = function (v) { veil.remove(); document.removeEventListener('keydown', onKey); resolve(v); };
+      var onKey = function (ev) { if (ev.key === 'Escape') done(null); };
+      var nm = function (r) { return (r.first + ' ' + r.last).trim() || r.email; };
+      var box = el('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', style: 'max-width:560px' }, el('h2', { text: 'Import the roster' }));
+      box.appendChild(el('p', { text: 'The file has ' + p.file + ' student' + (p.file === 1 ? '' : 's') + ': ' + p.matched + ' on the roster now, ' + p.added.length + ' new.' }));
+      if (p.added.length) box.appendChild(el('p', { class: 'muted', text: 'New: ' + p.added.map(nm).join(', ') + '.' }));
+      var go = el('button', { text: 'Import' });
+      var boxes = p.missing.map(function (r) {
+        var cb = el('input', { type: 'checkbox', on: { change: function () { label(); } } }); cb.checked = true;
+        return { r: r, cb: cb };
+      });
+      var label = function () {
+        var n = boxes.filter(function (b) { return !b.cb.checked; }).length;
+        go.textContent = n ? 'Import and drop ' + n : 'Import';
+        go.className = n ? 'danger solid' : '';
+      };
+      if (boxes.length) {
+        box.appendChild(el('p', {}, el('b', { text: boxes.length + (boxes.length === 1 ? ' student on the roster is' : ' students on the roster are') + ' not in the file.' }),
+          ' Checked students stay on the roster; unchecked students are dropped. ' + dropNote));
+        var all = function (v) { return function () { boxes.forEach(function (b) { b.cb.checked = v; }); label(); }; };
+        box.appendChild(el('div', { style: 'display:flex; gap:8px; margin-bottom:6px' },
+          el('button', { class: 'plain', text: 'Keep all', on: { click: all(true) } }), el('button', { class: 'plain', text: 'Drop all', on: { click: all(false) } })));
+        var list = el('div', { style: 'max-height:40vh; overflow:auto; border:1px solid #ddd; border-radius:6px; padding:6px 10px' });
+        boxes.forEach(function (b) { list.appendChild(el('label', { style: 'display:block; padding:2px 0' }, b.cb, ' ' + nm(b.r) + ' ', el('span', { class: 'muted', text: b.r.email }))); });
+        box.appendChild(list);
+      } else box.appendChild(el('p', { text: 'Every student on the roster is in the file.' }));
+      go.addEventListener('click', function () { done(boxes.filter(function (b) { return b.cb.checked; }).map(function (b) { return b.r.email; })); });
+      box.appendChild(el('div', { class: 'buttons' }, el('button', { class: 'plain', text: 'Cancel', on: { click: function () { done(null); } } }), go));
+      veil = el('div', { class: 'veil', on: { click: function (ev) { if (ev.target === veil) done(null); } } }, box);
+      document.body.appendChild(veil);
+      document.addEventListener('keydown', onKey);
+      go.focus();
+    });
+  }
+
+  /** Reads the chosen roster file, shows what it changes (importChoice), and imports it with the students to keep. */
+  function importRoster(file, dropNote) {
+    if (!file.files.length) { flash = { err: 'Choose a CSV file first.' }; render(); return; }
+    var reader = new FileReader();
+    reader.onload = function () {
+      var csv = String(reader.result);
+      call('previewRoster', [csv]).then(function (p) {
+        return importChoice(p, dropNote).then(function (keep) { if (keep) run('importRoster', [csv, keep], 'Roster imported.'); });
+      }).catch(fail);
+    };
+    reader.readAsText(file.files[0]);
+  }
+
   // Unsaved edits on the Settings tab: kept in settingsDraft across redraws, and checked before the tab or class changes.
   var settingsDraft = null;
   function settingsDirty() { return !!(settingsDraft && D && JSON.stringify(settingsDraft) !== JSON.stringify(settingsOf(D.state))); }
@@ -518,7 +574,7 @@
     app.innerHTML = '';
     document.getElementById('signin').hidden = true;
     app.appendChild(el('h1', { text: 'Attendance: instructor page' }));
-    app.appendChild(el('p', { class: 'muted' }, 'Signed in as ' + me + '. ',
+    app.appendChild(el('p', { class: 'muted' },
       el('button', { class: 'link', text: 'Sign out', on: { click: signOut } }), ' · ',
       el('a', { href: 'https://rabbanimaysam.github.io/group-signup/admin.html', text: 'Group sign-up instructor page' })));
 
@@ -1117,15 +1173,9 @@
     var S = D.state;
     card.appendChild(el('h2', { text: 'Roster (' + S.roster.length + ')' }));
     var file = el('input', { type: 'file', accept: '.csv,text/csv' });
-    card.appendChild(el('p', { class: 'muted', text: 'The Canvas gradebook export ("Student" as "Last, First" and "SIS Login ID"; the Points Possible row and the test student are skipped), or a CSV with first name, last name, and email columns. Addresses at mail.montclair.edu are stored as montclair.edu; students may sign in with either. Importing replaces the roster; marks of students who are dropped are kept in the database but no longer shown.' }));
+    card.appendChild(el('p', { class: 'muted', text: 'The Canvas gradebook export ("Student" as "Last, First" and "SIS Login ID"; the Points Possible row and the test student are skipped), or a CSV with first name, last name, and email columns. Addresses at mail.montclair.edu are stored as montclair.edu; students may sign in with either. Before importing, a dialog lists the students on the roster who are not in the file, to keep or drop each; marks of dropped students are kept in the database but no longer shown.' }));
     card.appendChild(el('div', { class: 'row' }, file, button('Import', '', function () {
-      if (!file.files.length) { flash = { err: 'Choose a CSV file first.' }; render(); return; }
-      ask('Replace the roster?', ['The current ' + S.roster.length + ' students are replaced by the file\'s rows.'], 'Import', S.roster.length > 0).then(function (yes) {
-        if (!yes) return;
-        var reader = new FileReader();
-        reader.onload = function () { run('importRoster', [String(reader.result)], 'Roster imported.'); };
-        reader.readAsText(file.files[0]);
-      });
+      importRoster(file, 'Marks of dropped students are kept in the database but no longer shown.');
     })));
     var aFirst = el('input', { type: 'text', placeholder: 'first name', size: 14 }), aLast = el('input', { type: 'text', placeholder: 'last name', size: 14 });
     var aMail = el('input', { type: 'text', placeholder: 'email or Montclair login ID', size: 26 });

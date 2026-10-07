@@ -284,6 +284,9 @@ async function attAdminDo(env, real, who, action, key, args) {
              log: (await env.DB.prepare('SELECT id, time, actor, action, detail FROM log WHERE class = ? ORDER BY id').bind('att:' + key).all()).results };
   }
 
+  // What importing a roster file would change; nothing is saved (the page then sends importRoster with the students to keep).
+  if (action === 'previewRoster') return att.previewRoster(s.roster, args[0]);
+
   if (action === 'setMark' || action === 'setMarks') {
     // Instructor override: present (true) or absent (false) per student and round; setMarks takes a list of [round, email, present].
     // Refused while a round is open, so that changes are made after the fact (the page saves them as a batch).
@@ -356,7 +359,7 @@ async function attAdminDo(env, real, who, action, key, args) {
     logs.push(['delete question', String(args[0])]);
   } else if (action === 'importRoster') {
     const before = s.roster.map(r => r.email);
-    att.ADMIN.importRoster(s, args[0]);
+    att.ADMIN.importRoster(s, args[0], args[1]);
     await writeAtt(env, key, s);
     const after = s.roster.map(r => r.email);
     logs.push(['import roster', after.length + ' students; added: ' + (after.filter(e => before.indexOf(e) === -1).join(', ') || 'none')

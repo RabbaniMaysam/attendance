@@ -464,11 +464,25 @@ export const ADMIN = {
     delete s.closed[roundId(date, open)]; delete s.extended[roundId(date, open)];
   },
 
-  /** Replaces the roster (layouts: see parseRoster in roster.js). Marks of dropped students are kept in att_marks; the other addresses of students who stay are kept. */
-  importRoster(s, csv) {
-    const old = s.roster;
+  /**
+   * Imports the CSV (layouts: see parseRoster in roster.js): the file's students make up the roster, and those
+   * already on it keep their other addresses. keep: emails of students on the roster but not in the file who stay
+   * (unchanged); the others are dropped. Without keep (an older page), every student not in the file is dropped.
+   * Marks of dropped students are kept in att_marks.
+   */
+  importRoster(s, csv, keep) {
+    const old = s.roster, stay = {};
     s.roster = parseRoster(csv);
     s.roster.forEach(r => { const o = old.find(x => x.email === r.email); if (o && o.alt) r.alt = o.alt; });
+    (Array.isArray(keep) ? keep : []).forEach(e => { stay[canonEmail(e)] = true; });
+    const inFile = {};
+    s.roster.forEach(r => { inFile[r.email] = true; });
+    // A kept student's other address that a file row now uses as its address is dropped from the kept student.
+    old.filter(r => !inFile[r.email] && stay[r.email]).forEach(r => {
+      const k = Object.assign({}, r);
+      if (k.alt) { k.alt = k.alt.filter(a => !inFile[a]); if (!k.alt.length) delete k.alt; }
+      s.roster.push(k);
+    });
     sortRoster(s);
   },
 
@@ -572,6 +586,19 @@ function checkCorrect(q, correct) {
   const label = options(q).find(o => o.toLowerCase() === c.toLowerCase());
   if (!label) throw new Error('The correct answer must be one of ' + options(q).join(', ') + '.');
   return label;
+}
+
+/**
+ * What importing the CSV would change, without changing anything: the file's student count, how many of them are on
+ * the roster, the new students, and the students on the roster but not in the file (whom the instructor keeps or drops).
+ */
+export function previewRoster(roster, csv) {
+  const file = parseRoster(csv), seen = {}, on = {};
+  file.forEach(st => { seen[st.email] = true; });
+  roster.forEach(r => { on[r.email] = true; });
+  const pick = r => ({ first: r.first, last: r.last, email: r.email });
+  return { file: file.length, matched: file.filter(st => on[st.email]).length,
+           added: file.filter(st => !on[st.email]).map(pick), missing: roster.filter(r => !seen[r.email]).map(pick) };
 }
 
 function sortRoster(s) {

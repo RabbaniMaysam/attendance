@@ -46,6 +46,16 @@ Per-class download from the instructor page
   whole log. The page shows a reminder at the top after 60 days without such a
   download (or without ticking "I saved it elsewhere").
 
+Named backups from the instructor page
+  The Reports tab has "Back up now" with an optional name (for example
+  "After Mid 1"): a copy of one class (settings, roster, questions, marks,
+  answers; not the log) kept in the database itself, in the tables
+  att_backups and att_backup_parts, so each nightly dump contains them too.
+  Each backup can be downloaded as JSON, restored, or deleted from that list.
+  A restore first saves the data it replaces as a backup named
+  "Before restoring ...". These protect against a mistake on the page, not
+  against losing the database; the nightly dumps do that.
+
 Restoring a dump
   From the worker/ folder:
     npx wrangler d1 execute attendance --remote --file "../../backups/attendance/<file>.sql"

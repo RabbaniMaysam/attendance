@@ -183,6 +183,35 @@ ok(r.ok && r.data.state.roster.length === 2 && r.data.state.secret === undefined
   'export has the state (no secret), the marks, the answers, and the whole log oldest first');
 r = await att('noteBackup', ['downloaded']);
 ok(r.ok && r.data.state.backupAt && Date.now() - Date.parse(r.data.state.backupAt) < 60000, 'backup noted with the time');
+// Named backups: save, list, download, restore (the replaced data saved first), delete.
+const secret0 = r.data.secret, backupAt0 = r.data.state.backupAt;
+r = await att('backup', ['  After   Mid 1 ']);
+ok(r.ok && r.data.backups.length === 1 && r.data.backups[0].name === 'After Mid 1' && r.data.backups[0].by === 'prof@gmail.com'
+  && r.data.backups[0].info.marks === 2 && r.data.backups[0].info.roster === 2 && r.data.backups[0].info.rounds === 2, 'named backup saved and listed with its counts');
+const marks0 = r.data.marks;
+const mid1 = r.data.backups[0].id;
+ok(/the limit is 100/.test((await att('backup', ['x'.repeat(101)])).error) && (await att('get')).data.backups.length === 1, 'a name over 100 characters is refused');
+r = await att('backup', ['']);
+ok(r.ok && r.data.backups.length === 2 && r.data.backups[0].name === '' && r.data.backups[0].id > mid1, 'an unnamed backup is saved, newest first');
+await att('deleteBackup', [r.data.backups[0].id]);
+r = await att('getBackup', [mid1]);
+ok(r.ok && r.data.name === 'After Mid 1' && r.data.key === AK && r.data.state.secret === undefined && r.data.marks.length === 2 && r.data.state.roster.length === 2, 'backup downloaded (no secret)');
+await att('setMarks', [marks0.map(x => [x.round, x.email, false])]);
+await att('removeStudent', [m(2)]);
+r = await att('get');
+ok(r.data.marks.filter(x => x.present).length === 0 && r.data.state.roster.length === 1, 'class changed after the backup');
+r = await att('restoreBackup', [mid1]);
+ok(r.ok && r.data.marks.length === 2 && r.data.marks.every(x => x.present === 1) && r.data.state.roster.length === 2 && r.data.secret === secret0 && r.data.state.backupAt === backupAt0,
+  'restore returns marks and roster; the session-code secret and the download note stay');
+ok(r.data.backups.length === 2 && r.data.backups[0].name === 'Before restoring After Mid 1' && r.data.backups[0].info.roster === 1, 'the replaced data are saved first as a backup');
+const undo = r.data.backups[0].id;
+r = await att('restoreBackup', [undo]);
+ok(r.ok && r.data.state.roster.length === 1 && r.data.marks.filter(x => x.present).length === 0 && r.data.backups.length === 3, 'a restore can be undone');
+r = await att('restoreBackup', [mid1]);
+ok(r.ok && r.data.state.roster.length === 2 && r.data.marks.length === 2, 'restored again');
+r = await att('deleteBackup', [mid1]);
+ok(r.ok && !r.data.backups.some(b => b.id === mid1) && /does not exist/.test((await att('getBackup', [mid1])).error)
+  && /does not exist/.test((await att('restoreBackup', [mid1])).error), 'backup deleted');
 r = await att('removeExtra', [round1.slice(0, 10), round1.slice(11)]);
 ok(r.data.open === null && (await attStu(2, 'state')).state.open === null, 'window removed: closed again');
 ok(r.data.marks.length === 2 && r.data.rounds.some(x => x.id === round1), 'the marks made in the open-now round are kept after the window is removed');
@@ -276,6 +305,22 @@ r = await att('restoreRound', [todayRound]);
 ok(r.ok && r.data.state.removed.length === 0 && r.data.rounds.some(x => x.id === todayRound), 'restored');
 ok(/not removed/.test((await att('restoreRound', [todayRound])).error), 'restoring it again is refused');
 await att('saveSettings', [{ title: 'Attendance test', days: [], open: '07:50', close: '08:01', skip: '', code: false }]);
+// A large class: the copy is stored in several parts and restored in several inserts.
+const BK = AK + '-big';
+await att('createClass', [BK, 'Backup size test'], '');
+for (const day of ['2026-02-02', '2026-02-03']) {
+  await att('setMarks', [Array.from({ length: 1600 }, (_, i) => [day + ' 10:00', 'student-with-a-long-address-' + i + '@example.edu', true])], BK);
+}
+r = await att('backup', ['big'], BK);
+const bigId = r.data.backups[0].id;
+ok(r.ok && r.data.backups[0].info.marks === 3200 && (await att('getBackup', [bigId], BK)).data.marks.length === 3200, 'a backup of 3200 marks saved in parts and read back whole');
+await att('setMarks', [Array.from({ length: 1600 }, (_, i) => ['2026-02-02 10:00', 'student-with-a-long-address-' + i + '@example.edu', false])], BK);
+r = await att('restoreBackup', [bigId], BK);
+ok(r.ok && r.data.marks.length === 3200 && r.data.marks.every(x => x.present === 1 && x.by === 'prof@gmail.com'), 'a backup of 3200 marks restored');
+ok((await att('deleteInfo', [], BK)).data.backups === 2 && (await att('deleteClass', [BK], BK)).ok && (await att('get')).data.backups.length > 0, 'the backups of a deleted class go with it; other classes keep theirs');
+await att('openNow', [5]);
+ok(/Restore a backup after it closes/.test((await att('restoreBackup', [(await att('get')).data.backups[0].id])).error), 'no restore while attendance is open');
+await att('closeNow', []);
 // The log: student marks, answers, and refusals; every instructor change and refusal; filter by who.
 let lg = (await att('log', ['', 'all', 5000])).data.rows;
 const acts = lg.map(x => x.action);
@@ -283,18 +328,19 @@ ok(acts.indexOf('create class') !== -1 && acts.indexOf('open now') !== -1 && act
   && acts.indexOf('import roster') !== -1 && acts.indexOf('add student') !== -1 && acts.indexOf('remove student') !== -1 && acts.indexOf('save settings') !== -1
   && acts.indexOf('ask question') !== -1 && acts.indexOf('delete question') !== -1 && acts.indexOf('remove extra') !== -1
   && acts.indexOf('extend') !== -1 && acts.indexOf('exclude date') !== -1 && acts.indexOf('include date') !== -1 && acts.indexOf('note backup') !== -1 && acts.indexOf('export') === -1
+  && acts.indexOf('backup') !== -1 && acts.indexOf('restore backup') !== -1 && acts.indexOf('delete backup') !== -1 && acts.indexOf('get backup') === -1
   && lg.some(x => x.action === 'remove round' && /1 marks deleted$/.test(x.detail)) && lg.some(x => x.action === 'remove round' && /scheduled window removed/.test(x.detail)) && acts.indexOf('restore round') !== -1,
   'instructor actions logged (reads are not): ' + acts.filter((a, i) => acts.indexOf(a) === i).join(', '));
 ok(acts.indexOf('present') !== -1 && acts.indexOf('answer') !== -1 && acts.indexOf('refused: mark') !== -1 && acts.indexOf('refused: setMark') !== -1, 'student marks, answers, and refusals logged');
 ok(lg.some(x => x.action === 'sign in' && x.actor === m(1)) && lg.some(x => x.action === 'refused: state' && x.actor === m(9) && /not on the class roster/.test(x.detail)),
   'Google sign-ins on the student page and page loads by accounts outside the roster are logged');
 ok(lg.filter(x => x.action === 'present').length === 2 && lg.every(x => x.action !== 'state'), 'a mark is logged once per press that changes something; page loads are not logged');
-ok(lg.find(x => x.action === 'set absent').detail.indexOf('F1 L1 (' + m(1) + '), round ' + round1) === 0 && lg.some(x => x.action === 'add student' && x.detail.indexOf('Al Ash (asha1@montclair.edu)') === 0), 'details name the student and the round');
+ok(lg.some(x => x.action === 'set absent' && x.detail.indexOf('F1 L1 (' + m(1) + '), round ' + round1) === 0) && lg.some(x => x.action === 'add student' && x.detail.indexOf('Al Ash (asha1@montclair.edu)') === 0), 'details name the student and the round');
 ok((await att('log', ['', 'instructor', 5000])).data.rows.every(x => /\(instructor\)$/.test(x.actor)) && (await att('log', ['', 'students', 5000])).data.rows.every(x => !/\(instructor\)/.test(x.actor))
   && (await att('log', ['', 'students', 5000])).data.rows.length + (await att('log', ['', 'instructor', 5000])).data.rows.length === lg.length, 'log filtered by who');
 ok((await att('log', ['set absent', 'all', 5000])).data.rows.every(x => x.action === 'set absent'), 'log search');
 r = await att('deleteInfo');
-ok(r.ok && r.data.state === undefined && r.data.roster === 2 && ['marks', 'rounds', 'questions', 'answers'].every(k => typeof r.data[k] === 'number') && r.data.log === lg.length && typeof r.data.title === 'string',
+ok(r.ok && r.data.state === undefined && r.data.roster === 2 && ['marks', 'rounds', 'questions', 'answers'].every(k => typeof r.data[k] === 'number') && r.data.log === lg.length && r.data.backups === 3 && typeof r.data.title === 'string',
   'deleteInfo counts: ' + JSON.stringify(r.data));
 ok(/Type the class key/.test((await att('deleteClass', ['wrong'])).error), 'attendance delete needs the key typed');
 r = await att('deleteClass', [AK]);

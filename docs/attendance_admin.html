@@ -573,6 +573,53 @@
       el('span', { class: 'muted', text: 'One JSON file with the settings, roster, every mark, every answer, and the whole log.' }));
   }
 
+  // ---- Named backups (Reports tab): a copy of the class kept in the tool's database, restorable from here
+  var backupName = '';  // the name being typed survives redraws
+  function backupTitle(b) { return b.name ? '"' + b.name + '"' : 'the unnamed backup of ' + isoClock(b.time); }
+  function backupContents(i) { return i.roster + ' students, ' + i.marks + ' marks in ' + i.rounds + ' rounds, ' + i.questions + ' questions, ' + i.answers + ' answers'; }
+  function downloadBackup(b) {
+    busy = true; flash = null; render();
+    call('getBackup', [b.id]).then(function (d) {
+      var slug = (d.name || 'backup').replace(/[^A-Za-z0-9-]+/g, '_').replace(/^_+|_+$/g, '') || 'backup';
+      var a = el('a', { href: URL.createObjectURL(new Blob([JSON.stringify(d, null, 1)], { type: 'application/json' })),
+        download: 'attendance_' + cur + '_' + slug + '_' + d.time.slice(0, 10) + '.json' });
+      document.body.appendChild(a); a.click(); a.remove();
+      busy = false; flash = { ok: 'Downloaded ' + backupTitle(b) + '.' }; render();
+    }).catch(fail);
+  }
+  function backupsSection(card) {
+    card.appendChild(el('h2', { text: 'Backups', style: 'margin-top:18px' }));
+    var nameIn = el('input', { type: 'text', value: backupName, maxlength: 100, size: 32, placeholder: 'name (optional), e.g. After Mid 1',
+      on: { input: function () { backupName = nameIn.value; }, keydown: function (ev) { if (ev.key === 'Enter') go(); } } });
+    var go = function () {
+      if (busy) return;
+      var n = nameIn.value.trim();
+      backupName = '';
+      run('backup', [n], 'Backup ' + (n ? '"' + n + '" ' : '') + 'saved.');
+    };
+    card.appendChild(el('div', { class: 'row' }, nameIn, button('Back up now', '', go)));
+    card.appendChild(el('p', { class: 'muted', text: 'A backup is a copy of this class as it is now (settings, roster, questions, every mark and answer), kept in the tool\'s database and in its nightly copy. '
+      + '"Restore" returns the class to that copy; the data it replaces are saved first as a backup named "Before restoring ...", so a restore can be undone. The log is never changed. "Download" saves the copy as a JSON file.' }));
+    if (!D.backups.length) { card.appendChild(el('p', { class: 'muted', text: 'No backup of this class yet.' })); return; }
+    var t = el('table', {}, el('tr', {}, el('th', { text: 'Name' }), el('th', { text: 'Saved' }), el('th', { text: 'Contents' }), el('th', {})));
+    D.backups.forEach(function (b) {
+      t.appendChild(el('tr', {}, el('td', { text: b.name || '(no name)', style: 'white-space:normal' }),
+        el('td', {}, isoClock(b.time), el('div', { class: 'muted', text: b.by })),
+        el('td', { text: backupContents(b.info), style: 'white-space:normal' }),
+        el('td', {}, button('Download', 'plain', function () { downloadBackup(b); }), ' ',
+          button('Restore', 'plain', function () {
+            ask('Restore ' + backupTitle(b) + '?', ['The class returns to its state of ' + isoFull(b.time) + ': ' + backupContents(b.info) + '.',
+              'Every change made since (marks, answers, questions, roster, settings) is replaced. The current data are saved first as a backup named "Before restoring ...", so you can undo this.',
+              'The log is not changed.'], 'Restore', true).then(function (yes) { if (yes) run('restoreBackup', [b.id], 'Restored ' + backupTitle(b) + '.'); });
+          }), ' ',
+          button('Delete', 'danger', function () {
+            ask('Delete ' + backupTitle(b) + '?', ['The backup of ' + isoFull(b.time) + ' is deleted. The class itself does not change. This cannot be undone.'], 'Delete backup', true)
+              .then(function (yes) { if (yes) run('deleteBackup', [b.id], 'Backup deleted.'); });
+          }))));
+    });
+    card.appendChild(el('div', { class: 'scroll' }, t));
+  }
+
   // ---- QR code tab: the code on the page, with the live status and a full-screen button
   function qrTab(card) {
     card.appendChild(liveStatus('banner ' + (D.open ? 'ok' : 'note')));
@@ -908,6 +955,8 @@
     });
     card.appendChild(el('div', { class: 'scroll' }, u));
 
+    backupsSection(card);
+
     card.appendChild(el('h2', { text: 'Full download', style: 'margin-top:18px' }));
     card.appendChild(el('div', { class: 'row' }, button('Download everything', 'plain', exportAll),
       el('span', { class: 'muted', text: 'One JSON file with the settings, roster, every mark, every answer, and the whole log, for your own records. '
@@ -1023,7 +1072,7 @@
     }
 
     card.appendChild(el('h2', { text: 'Delete this class', style: 'margin-top:18px' }));
-    card.appendChild(el('p', { class: 'muted', text: 'Deletes the roster, settings, every attendance mark, every answer, and the log of this class. Download everything on the Reports tab first. Two confirmations follow, the second asks for the class key.' }));
+    card.appendChild(el('p', { class: 'muted', text: 'Deletes the roster, settings, every attendance mark, every answer, the backups, and the log of this class. Download everything on the Reports tab first. Two confirmations follow, the second asks for the class key.' }));
     card.appendChild(button('Delete class', 'danger', function () {
       busy = true; flash = null; render();
       var key = cur;
@@ -1035,6 +1084,7 @@
           n(i.marks, 'attendance mark', 'attendance marks') + ' in ' + n(i.rounds, 'round', 'rounds') + '.',
           n(i.questions, 'question', 'questions') + ' with ' + n(i.answers, 'answer', 'answers') + '.',
           n(i.log, 'log entry', 'log entries') + '.',
+          n(i.backups, 'backup', 'backups') + ' (Reports tab).',
           'Students can no longer mark attendance in this class. This cannot be undone.'];
         return ask('Delete ' + key + '? (step 1 of 2)', lines, 'Continue', true).then(function (yes) {
           if (!yes) return null;

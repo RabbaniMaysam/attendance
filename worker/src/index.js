@@ -173,6 +173,47 @@ function writeAtt(env, key, s) {
 const attLog = (env, key, actor, action, detail) => env.DB.prepare(LOG_SQL + 'VALUES (?, ?, ?, ?, ?)')
   .bind(new Date().toISOString(), 'att:' + key, actor, action, String(detail || '').slice(0, 2000)).run();
 
+// ---------------------------------------------------------------- named backups
+
+const BACKUP_PART = 400000;  // characters per stored part (at most 1.2 MB in UTF-8, under D1's 2 MB per row)
+const BACKUP_NAME = 100;     // characters in a backup's name
+const ROWS_PER_INSERT = 1000;
+
+/** Saves a copy of the class (state without the secret, marks, answers) under a name; returns {id, info}. */
+async function makeBackup(env, key, s, name, by) {
+  const state = Object.assign({}, s); delete state.secret;
+  const marks = (await env.DB.prepare('SELECT round, email, self, present, edited, by FROM att_marks WHERE class = ? ORDER BY round, email').bind(key).all()).results;
+  const answers = (await env.DB.prepare('SELECT qid, email, answer, time FROM att_answers WHERE class = ? ORDER BY qid, email').bind(key).all()).results;
+  const info = { roster: s.roster.length, rounds: marks.map(x => x.round).filter((d, i, a) => a.indexOf(d) === i).length,
+                 marks: marks.length, questions: s.questions.length, answers: answers.length };
+  const data = JSON.stringify({ state: state, marks: marks, answers: answers });
+  const row = await env.DB.prepare('INSERT INTO att_backups (class, name, time, by, info) VALUES (?, ?, ?, ?, ?)')
+    .bind(key, name, new Date().toISOString(), by, JSON.stringify(info)).run();
+  const id = row.meta.last_row_id;
+  const parts = [];
+  for (let i = 0; i < data.length;) {
+    let end = Math.min(i + BACKUP_PART, data.length);
+    if (end < data.length && /[\uD800-\uDBFF]/.test(data[end - 1])) end--;  // never split a character written as two UTF-16 units
+    parts.push(env.DB.prepare('INSERT INTO att_backup_parts (backup, seq, data) VALUES (?, ?, ?)').bind(id, parts.length, data.slice(i, end)));
+    i = end;
+  }
+  try { await env.DB.batch(parts); } catch (err) {
+    await env.DB.prepare('DELETE FROM att_backups WHERE id = ?').bind(id).run();
+    throw err;
+  }
+  return { id: id, info: info };
+}
+
+/** One backup of the class with its copy: {id, name, time, by, info, state, marks, answers}. */
+async function readBackup(env, key, id) {
+  const b = await env.DB.prepare('SELECT id, name, time, by, info FROM att_backups WHERE id = ? AND class = ?').bind(Number(id), key).first();
+  if (!b) throw new Error('This backup does not exist (deleted?).');
+  const parts = (await env.DB.prepare('SELECT data FROM att_backup_parts WHERE backup = ? ORDER BY seq').bind(b.id).all()).results;
+  return Object.assign({ id: b.id, name: b.name, time: b.time, by: b.by, info: JSON.parse(b.info) }, JSON.parse(parts.map(p => p.data).join('')));
+}
+
+const backupLabel = b => (b.name ? '"' + b.name + '"' : 'unnamed') + ' of ' + b.time;
+
 // ---------------------------------------------------------------- student page
 
 async function attStudentCall(env, real, action, key, args) {
@@ -217,7 +258,7 @@ async function attStudentCall(env, real, action, key, args) {
 
 // ---------------------------------------------------------------- instructor page
 
-const ATT_READS = { whoami: 1, get: 1, log: 1, export: 1 };
+const ATT_READS = { whoami: 1, get: 1, log: 1, export: 1, getBackup: 1 };
 
 /** Every instructor action except reads is logged (actor "email (instructor)"); a refused one is logged with its reason. */
 async function attAdminCall(env, real, action, key, args) {
@@ -255,7 +296,8 @@ async function attAdminDo(env, real, who, action, key, args) {
     const marks = await env.DB.prepare('SELECT COUNT(*) AS n, COUNT(DISTINCT round) AS rounds FROM att_marks WHERE class = ?').bind(key).first();
     const answers = await env.DB.prepare('SELECT COUNT(*) AS n FROM att_answers WHERE class = ?').bind(key).first();
     const log = await env.DB.prepare('SELECT COUNT(*) AS n FROM log WHERE class = ?').bind('att:' + key).first();
-    return { title: s.title, roster: s.roster.length, rounds: marks.rounds, marks: marks.n, questions: s.questions.length, answers: answers.n, log: log.n };
+    const backups = await env.DB.prepare('SELECT COUNT(*) AS n FROM att_backups WHERE class = ?').bind(key).first();
+    return { title: s.title, roster: s.roster.length, rounds: marks.rounds, marks: marks.n, questions: s.questions.length, answers: answers.n, log: log.n, backups: backups.n };
   }
 
   if (action === 'deleteClass') {
@@ -265,7 +307,9 @@ async function attAdminDo(env, real, who, action, key, args) {
       env.DB.prepare('DELETE FROM att_classes WHERE key = ?').bind(key),
       env.DB.prepare('DELETE FROM att_marks WHERE class = ?').bind(key),
       env.DB.prepare('DELETE FROM att_answers WHERE class = ?').bind(key),
-      env.DB.prepare('DELETE FROM log WHERE class = ?').bind('att:' + key)
+      env.DB.prepare('DELETE FROM log WHERE class = ?').bind('att:' + key),
+      env.DB.prepare('DELETE FROM att_backup_parts WHERE backup IN (SELECT id FROM att_backups WHERE class = ?)').bind(key),
+      env.DB.prepare('DELETE FROM att_backups WHERE class = ?').bind(key)
     ]);
     return { classes: await attClassList(env) };
   }
@@ -280,7 +324,7 @@ async function attAdminDo(env, real, who, action, key, args) {
     return { rows: out.results };
   }
 
-  const s = await readAtt(env, key);
+  let s = await readAtt(env, key);  // replaced by the copy when a backup is restored
   const name = e => { const r = att.student(s, e); return r ? att.fullName(r) + ' (' + e + ')' : e; };
   const logs = [];  // [action, detail] lines written after the change succeeds
 
@@ -291,6 +335,12 @@ async function attAdminDo(env, real, who, action, key, args) {
              marks: (await env.DB.prepare('SELECT round, email, self, present, edited, by FROM att_marks WHERE class = ? ORDER BY round, email').bind(key).all()).results,
              answers: (await env.DB.prepare('SELECT qid, email, answer, time FROM att_answers WHERE class = ? ORDER BY qid, email').bind(key).all()).results,
              log: (await env.DB.prepare('SELECT id, time, actor, action, detail FROM log WHERE class = ? ORDER BY id').bind('att:' + key).all()).results };
+  }
+
+  // One named backup with its copy, for a download.
+  if (action === 'getBackup') {
+    const b = await readBackup(env, key, args[0]);
+    return Object.assign({ key: key }, b);
   }
 
   // What importing a roster file would change; nothing is saved (the page then sends importRoster with the students to keep).
@@ -339,6 +389,42 @@ async function attAdminDo(env, real, who, action, key, args) {
     att.ADMIN.noteBackup(s, now);
     await writeAtt(env, key, s);
     logs.push(['note backup', String(args[0] || 'downloaded')]);
+  } else if (action === 'backup') {
+    const label = String(args[0] || '').trim().replace(/\s+/g, ' ');
+    if (label.length > BACKUP_NAME) throw new Error('The name has ' + label.length + ' characters; the limit is ' + BACKUP_NAME + '.');
+    const b = await makeBackup(env, key, s, label, real);
+    logs.push(['backup', (label ? '"' + label + '"' : 'unnamed') + ' (#' + b.id + '): ' + b.info.roster + ' students, ' + b.info.marks + ' marks, ' + b.info.answers + ' answers']);
+  } else if (action === 'restoreBackup') {
+    // The class returns to the copy: settings, roster, questions, marks, and answers. The log is kept and the session-code
+    // secret stays; the data replaced are saved first as a backup of their own, so a restore can be undone.
+    if (att.windowAt(s, now)) throw new Error('Attendance is open. Restore a backup after it closes.');
+    const b = await readBackup(env, key, args[0]);
+    const before = await makeBackup(env, key, s, ('Before restoring ' + (b.name || 'the backup of ' + b.time)).slice(0, BACKUP_NAME), real);
+    const restored = Object.assign({}, b.state, { secret: s.secret, backupAt: s.backupAt });
+    const stmts = [
+      env.DB.prepare('UPDATE att_classes SET state = ? WHERE key = ?').bind(JSON.stringify(restored), key),
+      env.DB.prepare('DELETE FROM att_marks WHERE class = ?').bind(key),
+      env.DB.prepare('DELETE FROM att_answers WHERE class = ?').bind(key)];
+    for (let i = 0; i < b.marks.length; i += ROWS_PER_INSERT) {
+      stmts.push(env.DB.prepare("INSERT INTO att_marks (class, round, email, self, present, edited, by) SELECT ?, json_extract(value, '$.round'), json_extract(value, '$.email'), "
+        + "json_extract(value, '$.self'), json_extract(value, '$.present'), json_extract(value, '$.edited'), json_extract(value, '$.by') FROM json_each(?)")
+        .bind(key, JSON.stringify(b.marks.slice(i, i + ROWS_PER_INSERT))));
+    }
+    for (let i = 0; i < b.answers.length; i += ROWS_PER_INSERT) {
+      stmts.push(env.DB.prepare("INSERT INTO att_answers (class, qid, email, answer, time) SELECT ?, json_extract(value, '$.qid'), json_extract(value, '$.email'), "
+        + "json_extract(value, '$.answer'), json_extract(value, '$.time') FROM json_each(?)")
+        .bind(key, JSON.stringify(b.answers.slice(i, i + ROWS_PER_INSERT))));
+    }
+    await env.DB.batch(stmts);
+    s = att.upgradeAtt(restored);
+    logs.push(['restore backup', backupLabel(b) + ' (#' + b.id + '): ' + b.marks.length + ' marks, ' + b.answers.length + ' answers; the data replaced were saved as backup #' + before.id]);
+  } else if (action === 'deleteBackup') {
+    const b = await env.DB.prepare('SELECT id, name, time FROM att_backups WHERE id = ? AND class = ?').bind(Number(args[0]), key).first();
+    if (!b) throw new Error('This backup does not exist (deleted?).');
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM att_backup_parts WHERE backup = ?').bind(b.id),
+      env.DB.prepare('DELETE FROM att_backups WHERE id = ?').bind(b.id)]);
+    logs.push(['delete backup', backupLabel(b) + ' (#' + b.id + ')']);
   } else if (action === 'removeRound') {
     // A whole round goes: its window and every mark made in it.
     const scheduled = att.ADMIN.removeRound(s, args[0]);
@@ -418,9 +504,11 @@ async function attAdminDo(env, real, who, action, key, args) {
     ? (await env.DB.prepare('SELECT qid, email, answer, time FROM att_answers WHERE class = ?').bind(key).all()).results : [];
   const roundsList = att.rounds(s, ids, now);
   const open = att.windowAt(s, now);
+  const backups = (await env.DB.prepare('SELECT id, name, time, by, info FROM att_backups WHERE class = ? ORDER BY id DESC').bind(key).all()).results
+    .map(b => Object.assign(b, { info: JSON.parse(b.info) }));
   // The secret is sent apart from the state (never in a download): the page computes the session codes from it and `now`.
   const state = Object.assign({}, s); delete state.secret;
   return { state: state, marks: marks, answers: answers, rounds: roundsList, today: att.nyParts(now).date,
            open: open, secret: s.secret, next: att.nextWindow(s, now), now: new Date(now).toISOString(),
-           question: att.openQuestion(s, now), report: att.report(s, roundsList, marks, now) };
+           question: att.openQuestion(s, now), report: att.report(s, roundsList, marks, now), backups: backups };
 }

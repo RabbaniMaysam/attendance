@@ -42,3 +42,24 @@ CREATE TABLE IF NOT EXISTS log (
 );
 
 CREATE INDEX IF NOT EXISTS log_class ON log (class, id);
+
+-- Named backups made from the instructor page: a copy of one class's state (without the secret), marks,
+-- and answers at one moment, restorable from the page. info = counts as JSON, shown in the list.
+-- The copy is JSON split into parts of at most 400,000 characters (D1 caps a row at 2 MB).
+CREATE TABLE IF NOT EXISTS att_backups (
+  id    INTEGER PRIMARY KEY AUTOINCREMENT,
+  class TEXT NOT NULL,
+  name  TEXT NOT NULL,
+  time  TEXT NOT NULL,
+  by    TEXT NOT NULL,
+  info  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS att_backup_parts (
+  backup INTEGER NOT NULL,
+  seq    INTEGER NOT NULL,
+  data   TEXT NOT NULL,
+  PRIMARY KEY (backup, seq)
+);
+
+CREATE INDEX IF NOT EXISTS att_backups_class ON att_backups (class, id);

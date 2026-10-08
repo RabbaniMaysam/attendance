@@ -134,6 +134,16 @@ throws(() => att.ADMIN.addStudent(s, 'X', 'Y', 'not an email'), /not valid/, 'ba
 att.ADMIN.removeStudent(s, 'AardvarkA1@mail.montclair.edu');
 ok(s.roster.length === 2 && !att.student(s, 'aardvarka1@montclair.edu'), 'student removed by either domain');
 throws(() => att.ADMIN.removeStudent(s, 'nobody@x.edu'), /not on the roster/, 'removing an unknown student refused');
+// Removing several students at once: all must be on the roster, duplicates count once, nothing changes on a refusal.
+throws(() => att.ADMIN.removeStudents(s, []), /No student is selected/, 'bulk removal of nobody refused');
+throws(() => att.ADMIN.removeStudents(s, [s.roster[0].email, 'nobody@x.edu']), /nobody@x.edu is not on the roster/, 'bulk removal with an unknown email refused');
+ok(s.roster.length === 2, 'a refused bulk removal changes nothing');
+{
+  const copy = JSON.parse(JSON.stringify(s));
+  att.ADMIN.addStudent(copy, 'Ada', 'Aardvark', 'aardvarka1');
+  const gone = att.ADMIN.removeStudents(copy, ['AardvarkA1@mail.montclair.edu', 'aardvarka1@montclair.edu', copy.roster[2].email]);
+  ok(copy.roster.length === 1 && gone.length === 2 && gone[0].email === 'aardvarka1@montclair.edu', 'bulk removal by either domain, duplicates once; the removed rows are returned');
+}
 // Editing a student: name, main address, other addresses that sign the student in.
 const keep = JSON.parse(JSON.stringify(s.roster));
 att.ADMIN.addStudent(s, 'Ada', 'Aardvark', 'aardvarka1');

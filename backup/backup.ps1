@@ -12,9 +12,17 @@ $log = Join-Path $out 'last_run.log'
 $flag = Join-Path $out 'BACKUP_FAILED.txt'
 Set-Location (Join-Path $root 'worker')
 Set-Content $log ('Backup started ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')) -Encoding utf8
-# The Cloudflare export fails now and then; try up to five times, 10 minutes apart.
 # Wrangler writes progress and errors to stderr. Under 'Stop' PowerShell 5.1 turns the first stderr
-# line into a terminating error, which would end the script before any retry; so relax it for the call.
+# line into a terminating error, which would end the script before any retry; so relax it for the calls.
+# The first wrangler call of the night finds the Cloudflare sign-in token expired, refreshes it, and
+# the export it then requests is refused ("Authentication error [code: 10000]"; so the group-signup
+# backup at 03:00 on 2026-10-04 to 2026-10-07); the next wrangler call works. So the token is refreshed
+# by a harmless call first, and the export is tried up to five times, 2 minutes apart (the scheduled
+# task stops the script after 1 hour).
+$ErrorActionPreference = 'Continue'
+& npx --yes wrangler whoami 2>&1 | ForEach-Object { "$_" -replace "\x1b\[[0-9;]*m", '' } |
+  Where-Object { $_ -match 'logged in|not authenticated|ERROR' } | Add-Content $log -Encoding utf8
+$ErrorActionPreference = 'Stop'
 $ok = $false
 foreach ($try in 1..5) {
   Add-Content $log ("`r`n--- attempt $try at " + (Get-Date -Format 'HH:mm:ss')) -Encoding utf8
@@ -25,7 +33,7 @@ foreach ($try in 1..5) {
     Add-Content $log -Encoding utf8
   $ErrorActionPreference = 'Stop'
   if ((Test-Path $file) -and (Get-Item $file).Length -ge 1000) { $ok = $true; break }
-  if ($try -lt 5) { Start-Sleep -Seconds 600 }
+  if ($try -lt 5) { Start-Sleep -Seconds 120 }
 }
 if (-not $ok) {
   Set-Content $flag ('The backup of ' + (Get-Date -Format 'yyyy-MM-dd') + ' failed five times; see last_run.log.') -Encoding utf8

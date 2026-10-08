@@ -112,6 +112,7 @@
   var TABS = ['Attendance', 'Questions', 'QR code', 'Reports', 'Log', 'Settings', 'Roster'];
   var token = '', me = '', classes = [], cur = '', D = null, tab = 'Attendance';
   var flash = null, busy = false, timer = null;
+  var rosterSel = {};  // emails ticked on the Roster tab for removal at once
   // attendance_admin.html?qr=KEY is the QR screen of that class in its own tab (for the projector); see qrPage.
   var qrMode = new URLSearchParams(location.search).get('qr') || '';
   // The token is kept in localStorage: the Worker's session token (sent after a Google sign-in) lasts months. "Sign out" deletes it.
@@ -141,7 +142,7 @@
   }
 
   function setClass(key) {
-    cur = key || ''; D = null; settingsDraft = null; pending = {}; logRows = null;
+    cur = key || ''; D = null; settingsDraft = null; pending = {}; logRows = null; rosterSel = {};
     try { sessionStorage.setItem('att_admin_class', cur); } catch (e) {}
   }
 
@@ -346,6 +347,28 @@
 
   function ask(title, lines, okLabel, danger) {
     return choose(title, lines, [{ label: okLabel, value: true, cls: danger ? 'danger solid' : '' }]).then(function (v) { return v === true; });
+  }
+
+  /** A dialog whose button works only once the class key is typed exactly. Resolves the typed key, or null on Cancel, Esc, or a click outside. */
+  function confirmKey(title, lines, key, okLabel) {
+    return new Promise(function (resolve) {
+      var veil;
+      var done = function (v) { veil.remove(); document.removeEventListener('keydown', onKey); resolve(v); };
+      var onKey = function (ev) { if (ev.key === 'Escape') done(null); };
+      var box = el('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' }, el('h2', { text: title }));
+      lines.forEach(function (l) { box.appendChild(el('p', { text: l })); });
+      var go = el('button', { class: 'danger solid', text: okLabel, disabled: true, on: { click: function () { done(inp.value.trim()); } } });
+      var inp = el('input', { type: 'text', placeholder: key, autocomplete: 'off', style: 'width:100%; box-sizing:border-box', on: {
+        input: function () { go.disabled = inp.value.trim() !== key; },
+        keydown: function (ev) { if (ev.key === 'Enter' && !go.disabled) done(inp.value.trim()); } } });
+      box.appendChild(el('p', {}, el('b', { text: 'Type the class key ' + key + ' to confirm:' })));
+      box.appendChild(inp);
+      box.appendChild(el('div', { class: 'buttons' }, el('button', { class: 'plain', text: 'Cancel', on: { click: function () { done(null); } } }), go));
+      veil = el('div', { class: 'veil', on: { click: function (ev) { if (ev.target === veil) done(null); } } }, box);
+      document.body.appendChild(veil);
+      document.addEventListener('keydown', onKey);
+      inp.focus();
+    });
   }
 
   /**
@@ -1000,14 +1023,31 @@
     }
 
     card.appendChild(el('h2', { text: 'Delete this class', style: 'margin-top:18px' }));
-    var conf = el('input', { type: 'text', placeholder: 'type the class key: ' + cur, size: 30 });
-    card.appendChild(el('div', { class: 'row' }, conf, button('Delete class', 'danger', function () {
-      ask('Delete ' + cur + '?', ['Its roster, settings, and every attendance mark are deleted. This cannot be undone.'], 'Delete class', true).then(function (yes) {
-        if (!yes) return;
-        busy = true;
-        call('deleteClass', [conf.value]).then(function (d) { busy = false; classes = d.classes; settingsDraft = null; setClass(classes.length ? classes[0].key : ''); flash = { ok: 'Class deleted.' }; loadClass(false); }).catch(fail);
-      });
-    })));
+    card.appendChild(el('p', { class: 'muted', text: 'Deletes the roster, settings, every attendance mark, every answer, and the log of this class. Download everything on the Reports tab first. Two confirmations follow, the second asks for the class key.' }));
+    card.appendChild(button('Delete class', 'danger', function () {
+      busy = true; flash = null; render();
+      var key = cur;
+      call('deleteInfo').then(function (i) {
+        busy = false; render();
+        var n = function (k, one, many) { return k + ' ' + (k === 1 ? one : many); };
+        var lines = ['Deleting ' + key + ' (' + i.title + ') removes permanently:',
+          n(i.roster, 'student', 'students') + ' on the roster.',
+          n(i.marks, 'attendance mark', 'attendance marks') + ' in ' + n(i.rounds, 'round', 'rounds') + '.',
+          n(i.questions, 'question', 'questions') + ' with ' + n(i.answers, 'answer', 'answers') + '.',
+          n(i.log, 'log entry', 'log entries') + '.',
+          'Students can no longer mark attendance in this class. This cannot be undone.'];
+        return ask('Delete ' + key + '? (step 1 of 2)', lines, 'Continue', true).then(function (yes) {
+          if (!yes) return null;
+          return confirmKey('Delete ' + key + '? (step 2 of 2)', ['Everything listed is deleted now and cannot be recovered from this page.'], key, 'Delete class permanently');
+        }).then(function (typed) {
+          if (typed === null || typed === undefined) return;
+          busy = true; render();
+          return call('deleteClass', [typed], key).then(function (d) {
+            busy = false; classes = d.classes; settingsDraft = null; setClass(classes.length ? classes[0].key : ''); flash = { ok: 'Class ' + key + ' deleted.' }; loadClass(false);
+          });
+        });
+      }).catch(fail);
+    }));
   }
 
   // ---- Questions
@@ -1183,10 +1223,37 @@
       button('Add', 'plain', function () { run('addStudent', [aFirst.value, aLast.value, aMail.value], 'Student added.'); })));
     if (!S.roster.length) return;
     card.appendChild(el('p', { class: 'muted', text: 'Edit changes a student\'s name or address (the marks follow the address) and lists other addresses, such as a personal Gmail, that sign the student in as the same person.' }));
-    var t = el('table', {}, el('tr', {}, el('th', { text: 'Last name' }), el('th', { text: 'First name' }), el('th', { text: 'Email' }), el('th', { text: 'Other addresses' }), el('th', {})));
+    // Removing several at once: the first column's checkboxes (rosterSel, by email), the buttons select all or none,
+    // and "Remove selected" asks once for the whole selection.
+    var selected = function () { return S.roster.filter(function (r) { return rosterSel[r.email]; }); };
+    var rmBtn = el('button', { class: 'danger', on: { click: function () {
+      var sel = selected(), k = sel.length;
+      if (!k) return;
+      var names = sel.map(fullName);
+      var shown = names.slice(0, 12).join(', ') + (k > 12 ? ', and ' + (k - 12) + ' more' : '');
+      ask('Remove ' + k + ' student' + (k === 1 ? '' : 's') + ' from the class?', [shown + '.',
+        'They can no longer mark attendance. Their existing marks stay in the database but are no longer shown.'], 'Remove ' + k, true).then(function (yes) {
+        if (yes) run('removeStudents', [sel.map(function (r) { return r.email; })], k + ' student' + (k === 1 ? '' : 's') + ' removed.');
+      });
+    } } });
+    var cbs = [];
+    var refresh = function () {
+      var k = selected().length;
+      rmBtn.textContent = 'Remove selected (' + k + ')'; rmBtn.disabled = busy || !k;
+      cbs.forEach(function (x) { x.cb.checked = !!rosterSel[x.email]; });
+    };
+    var setAll = function (v) { return function () { rosterSel = {}; if (v) S.roster.forEach(function (r) { rosterSel[r.email] = true; }); refresh(); }; };
+    card.appendChild(el('div', { class: 'row', style: 'margin-top:10px' }, el('span', { class: 'muted', text: 'Remove several students: tick them in the first column, then' }),
+      button('Select all', 'plain', setAll(true)), button('Select none', 'plain', setAll(false)), rmBtn));
+    var t = el('table', {}, el('tr', {}, el('th', {}), el('th', { text: 'Last name' }), el('th', { text: 'First name' }), el('th', { text: 'Email' }), el('th', { text: 'Other addresses' }), el('th', {})));
     S.roster.forEach(function (r) {
       if (rosterEdit && rosterEdit.email === r.email) { t.appendChild(editRow(r)); return; }
-      t.appendChild(el('tr', {}, el('td', { text: r.last }), el('td', { text: r.first }), el('td', { text: r.email }), el('td', { class: 'muted', text: (r.alt || []).join(', ') }),
+      var cb = el('input', { type: 'checkbox', 'aria-label': 'Select ' + fullName(r), on: { change: function () {
+        if (cb.checked) rosterSel[r.email] = true; else delete rosterSel[r.email];
+        refresh();
+      } } });
+      cbs.push({ email: r.email, cb: cb });
+      t.appendChild(el('tr', {}, el('td', {}, cb), el('td', { text: r.last }), el('td', { text: r.first }), el('td', { text: r.email }), el('td', { class: 'muted', text: (r.alt || []).join(', ') }),
         el('td', {}, button('Edit', 'plain', function () { rosterEdit = { email: r.email, first: r.first, last: r.last, mail: r.email, alt: (r.alt || []).join(', ') }; render(); }), ' ',
           button('Remove', 'danger', function () {
             ask('Remove ' + fullName(r) + '?', ['The student can no longer mark attendance. Existing marks stay in the database but are no longer shown.'], 'Remove', true)
@@ -1194,6 +1261,7 @@
           }))));
     });
     card.appendChild(t);
+    refresh();
   }
 
   /** The roster row being edited: the typed values live in rosterEdit, so redraws and a refused save keep them. */

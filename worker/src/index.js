@@ -249,6 +249,15 @@ async function attAdminDo(env, real, who, action, key, args) {
     return { key: newKey, classes: await attClassList(env) };
   }
 
+  // What deleting the class would remove; the page shows it before asking for the key.
+  if (action === 'deleteInfo') {
+    const s = await readAtt(env, key);
+    const marks = await env.DB.prepare('SELECT COUNT(*) AS n, COUNT(DISTINCT round) AS rounds FROM att_marks WHERE class = ?').bind(key).first();
+    const answers = await env.DB.prepare('SELECT COUNT(*) AS n FROM att_answers WHERE class = ?').bind(key).first();
+    const log = await env.DB.prepare('SELECT COUNT(*) AS n FROM log WHERE class = ?').bind('att:' + key).first();
+    return { title: s.title, roster: s.roster.length, rounds: marks.rounds, marks: marks.n, questions: s.questions.length, answers: answers.n, log: log.n };
+  }
+
   if (action === 'deleteClass') {
     if (String(args[0]) !== key) throw new Error('Type the class key exactly to delete the class.');
     await readAtt(env, key);
@@ -388,11 +397,12 @@ async function attAdminDo(env, real, who, action, key, args) {
   } else if (Object.prototype.hasOwnProperty.call(att.ADMIN, action)) {
     const before = s.roster.slice();
     const removed = action === 'removeStudent' ? name(canonEmail(args[0])) : '';
-    att.ADMIN[action](s, ...args);
+    const out = att.ADMIN[action](s, ...args);
     await writeAtt(env, key, s);
     const added = s.roster.filter(r => before.indexOf(r) === -1).map(r => name(r.email)).join(', ');
     const detail = { addExtra: 'window ' + args[0] + ' ' + args[1] + ' to ' + args[2], removeExtra: 'window ' + args[0] + ' ' + (args[1] || ''),
                      addStudent: added, removeStudent: removed, setCorrect: args[0] + ': ' + (args[1] || 'none'),
+                     removeStudents: action === 'removeStudents' ? out.length + ' students: ' + out.map(r => att.fullName(r) + ' (' + r.email + ')').join(', ') : '',
                      excludeDate: args[0] + ' (does not count)', includeDate: args[0] + ' (counts again)', restoreRound: 'round ' + args[0] };
     logs.push([action.replace(/([A-Z])/g, c => ' ' + c.toLowerCase()), action in detail ? detail[action] : args.join(', ')]);
   } else if (action !== 'get') throw new Error('Unknown action.');

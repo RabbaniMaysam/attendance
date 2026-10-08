@@ -525,6 +525,16 @@ export const ADMIN = {
     s.roster = s.roster.filter(r => r.email !== mail);
   },
 
+  /** Removes several students at once. Every email must be on the roster (duplicates count once). Returns the removed rows. */
+  removeStudents(s, emails) {
+    const seen = {};
+    const list = (Array.isArray(emails) ? emails : []).map(e => canonEmail(e)).filter(e => !seen[e] && (seen[e] = true));
+    if (!list.length) throw new Error('No student is selected.');
+    const rows = list.map(e => { const r = student(s, e); if (!r) throw new Error(e + ' is not on the roster.'); return r; });
+    s.roster = s.roster.filter(r => rows.indexOf(r) === -1);
+    return rows;
+  },
+
   /**
    * Opens a question for `minutes` minutes (closing any open one). kind: tf, yn, mc with n choices (2 to 5),
    * or open (students type the answer); text and correct are optional. Returns the new question.

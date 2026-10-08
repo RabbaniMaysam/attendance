@@ -193,6 +193,12 @@ r = await att('addStudent', ['Al', 'Ash', 'asha1']);
 ok(r.ok && r.data.state.roster.length === 2 && r.data.state.roster[0].email === 'asha1@montclair.edu', 'student added by login ID');
 r = await att('removeStudent', ['asha1@mail.montclair.edu']);
 ok(r.ok && r.data.state.roster.length === 1, 'student removed');
+await att('addStudent', ['Bo', 'Bash', 'bashb1']);
+await att('addStudent', ['Cy', 'Cash', 'cashc1']);
+ok(/nobody@x.edu is not on the roster/.test((await att('removeStudents', [['bashb1@montclair.edu', 'nobody@x.edu']])).error) && (await att('get')).data.state.roster.length === 3, 'bulk removal with an unknown student refused and changes nothing');
+r = await att('removeStudents', [['bashb1@mail.montclair.edu', 'cashc1@montclair.edu']]);
+ok(r.ok && r.data.state.roster.length === 1 && r.data.state.roster[0].email === 'doej1@montclair.edu', 'two students removed at once');
+ok(/^2 students: Bo Bash \(bashb1@montclair.edu\), Cy Cash/.test((await att('log', ['remove students', 'all', 5])).data.rows[0].detail), 'one log line names the removed students');
 // in-class questions
 await att('importRoster', ['first,last,email\nF1,L1,' + m(1) + '\nF2,L2,' + m(2)]);
 // Editing a student: the name, the main address (marks follow it), other addresses that sign the student in.
@@ -283,10 +289,13 @@ ok(acts.indexOf('present') !== -1 && acts.indexOf('answer') !== -1 && acts.index
 ok(lg.some(x => x.action === 'sign in' && x.actor === m(1)) && lg.some(x => x.action === 'refused: state' && x.actor === m(9) && /not on the class roster/.test(x.detail)),
   'Google sign-ins on the student page and page loads by accounts outside the roster are logged');
 ok(lg.filter(x => x.action === 'present').length === 2 && lg.every(x => x.action !== 'state'), 'a mark is logged once per press that changes something; page loads are not logged');
-ok(lg.find(x => x.action === 'set absent').detail.indexOf('F1 L1 (' + m(1) + '), round ' + round1) === 0 && lg.find(x => x.action === 'add student').detail.indexOf('Al Ash (asha1@montclair.edu)') === 0, 'details name the student and the round');
+ok(lg.find(x => x.action === 'set absent').detail.indexOf('F1 L1 (' + m(1) + '), round ' + round1) === 0 && lg.some(x => x.action === 'add student' && x.detail.indexOf('Al Ash (asha1@montclair.edu)') === 0), 'details name the student and the round');
 ok((await att('log', ['', 'instructor', 5000])).data.rows.every(x => /\(instructor\)$/.test(x.actor)) && (await att('log', ['', 'students', 5000])).data.rows.every(x => !/\(instructor\)/.test(x.actor))
   && (await att('log', ['', 'students', 5000])).data.rows.length + (await att('log', ['', 'instructor', 5000])).data.rows.length === lg.length, 'log filtered by who');
 ok((await att('log', ['set absent', 'all', 5000])).data.rows.every(x => x.action === 'set absent'), 'log search');
+r = await att('deleteInfo');
+ok(r.ok && r.data.state === undefined && r.data.roster === 2 && ['marks', 'rounds', 'questions', 'answers'].every(k => typeof r.data[k] === 'number') && r.data.log === lg.length && typeof r.data.title === 'string',
+  'deleteInfo counts: ' + JSON.stringify(r.data));
 ok(/Type the class key/.test((await att('deleteClass', ['wrong'])).error), 'attendance delete needs the key typed');
 r = await att('deleteClass', [AK]);
 ok(r.ok && !r.data.classes.some(c => c.key === AK) && /does not match/.test((await att('get')).error), 'attendance class deleted');

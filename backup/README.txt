@@ -18,10 +18,14 @@ Daily dump into Google Drive
   Google Drive, so the dumps are synced, and it is outside the repository, so
   they never reach the public repository. The newest 90 dumps are kept, plus
   the first dump of every month, which is never deleted (12 files a year).
-  A failed export is retried up to five attempts, 10 minutes apart;
-  last_run.log has the output of every attempt of the last run. If all five
-  fail, the run writes BACKUP_FAILED.txt into that folder (the next good run
-  deletes it).
+  The script first refreshes the Cloudflare sign-in token with a harmless
+  wrangler call (the first call of the night finds the token expired, and the
+  export requested in that same call is refused with "Authentication error
+  [code: 10000]"; the next call works). A failed export is then retried up to
+  five attempts, 2 minutes apart; last_run.log has the output of every attempt
+  of the last run. If all five fail, the run writes BACKUP_FAILED.txt into that
+  folder (the next good run deletes it). The scheduled task stops the script
+  after 1 hour.
 
   After each dump, export_csv.mjs writes readable CSV copies of it into the
   csv\ subfolder of that folder (replacing the previous set): per class the

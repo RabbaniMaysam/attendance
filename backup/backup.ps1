@@ -12,6 +12,12 @@ $log = Join-Path $out 'last_run.log'
 $flag = Join-Path $out 'BACKUP_FAILED.txt'
 Set-Location (Join-Path $root 'worker')
 Set-Content $log ('Backup started ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')) -Encoding utf8
+# Wrangler comes from a fixed install outside the npx cache (%USERPROFILE%\tools\wrangler, made with
+# "npm install wrangler@4" there). "npx --yes wrangler" downloaded each new wrangler release into the npx
+# cache first; on 2026-10-09 that download failed (EBUSY: a file of the cached copy was in use) and left
+# the cache broken, so all three tools' backups failed. Without the fixed install, npx is used as before.
+$wr = Join-Path $env:USERPROFILE 'tools\wrangler\node_modules\.bin\wrangler.cmd'
+if (Test-Path $wr) { $wrPre = @() } else { $wr = 'npx'; $wrPre = @('--yes', 'wrangler') }
 # Wrangler writes progress and errors to stderr. Under 'Stop' PowerShell 5.1 turns the first stderr
 # line into a terminating error, which would end the script before any retry; so relax it for the calls.
 # The first wrangler call of the night finds the Cloudflare sign-in token expired, refreshes it, and
@@ -20,7 +26,7 @@ Set-Content $log ('Backup started ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')) 
 # by a harmless call first, and the export is tried up to five times, 2 minutes apart (the scheduled
 # task stops the script after 1 hour).
 $ErrorActionPreference = 'Continue'
-& npx --yes wrangler whoami 2>&1 | ForEach-Object { "$_" -replace "\x1b\[[0-9;]*m", '' } |
+& $wr @wrPre whoami 2>&1 | ForEach-Object { "$_" -replace "\x1b\[[0-9;]*m", '' } |
   Where-Object { $_ -match 'logged in|not authenticated|ERROR' } | Add-Content $log -Encoding utf8
 $ErrorActionPreference = 'Stop'
 $ok = $false
@@ -28,7 +34,7 @@ foreach ($try in 1..5) {
   Add-Content $log ("`r`n--- attempt $try at " + (Get-Date -Format 'HH:mm:ss')) -Encoding utf8
   if (Test-Path $file) { Remove-Item $file }
   $ErrorActionPreference = 'Continue'
-  & npx --yes wrangler d1 export attendance --remote --output $file 2>&1 |
+  & $wr @wrPre d1 export attendance --remote --output $file 2>&1 |
     ForEach-Object { ("$_" -replace "\x1b\[[0-9;]*m", '') -replace 'https://\S+', '<download link removed>' } |
     Add-Content $log -Encoding utf8
   $ErrorActionPreference = 'Stop'

@@ -3,6 +3,9 @@
 # (F:\GDriveMay\Maysam\01_online_tools\backups\attendance), which lives in Google Drive and is never committed.
 # Restore one with:  npx wrangler d1 execute attendance --remote --file "<that folder>\<file>.sql"
 # Registered as a Windows scheduled task "attendance backup" (see backup/README.txt).
+# -IfMissing: stop at once when today's dump exists. The scheduled task passes it and starts the script
+# at 03:10, 12:10, and 18:10, so a night run that failed or did not start is redone the same day.
+param([switch]$IfMissing)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $out = Join-Path (Split-Path -Parent $root) 'backups\attendance'
@@ -10,6 +13,10 @@ New-Item -ItemType Directory -Force -Path $out | Out-Null
 $file = Join-Path $out ('attendance_' + (Get-Date -Format 'yyyy-MM-dd_HHmm') + '.sql')
 $log = Join-Path $out 'last_run.log'
 $flag = Join-Path $out 'BACKUP_FAILED.txt'
+# history.log keeps one line per run (last_run.log is replaced by each run).
+$hist = Join-Path $out 'history.log'
+$today = Get-Date -Format 'yyyy-MM-dd'
+if ($IfMissing -and (Get-ChildItem $out -Filter "attendance_${today}_*.sql" | Where-Object { $_.Length -ge 1000 })) { exit 0 }
 Set-Location (Join-Path $root 'worker')
 Set-Content $log ('Backup started ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')) -Encoding utf8
 # Wrangler comes from a fixed install outside the npx cache (%USERPROFILE%\tools\wrangler, made with
@@ -43,10 +50,12 @@ foreach ($try in 1..5) {
 }
 if (-not $ok) {
   Set-Content $flag ('The backup of ' + (Get-Date -Format 'yyyy-MM-dd') + ' failed five times; see last_run.log.') -Encoding utf8
+  Add-Content $hist ((Get-Date -Format 'yyyy-MM-dd HH:mm') + ' FAILED five attempts') -Encoding utf8
   throw "Export failed five times; see last_run.log"
 }
 if (Test-Path $flag) { Remove-Item $flag }
 Add-Content $log ('Saved ' + (Split-Path $file -Leaf) + ', ' + (Get-Item $file).Length + ' bytes') -Encoding utf8
+Add-Content $hist ((Get-Date -Format 'yyyy-MM-dd HH:mm') + ' saved ' + (Split-Path $file -Leaf) + ', ' + (Get-Item $file).Length + ' bytes') -Encoding utf8
 # Readable CSV copies of this dump in csv\ (export_csv.mjs). A failure here is logged; the dump is kept.
 $ErrorActionPreference = 'Continue'
 & node --no-warnings (Join-Path $PSScriptRoot 'export_csv.mjs') $file 2>&1 | ForEach-Object { "$_" } | Add-Content $log -Encoding utf8

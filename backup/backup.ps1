@@ -1,6 +1,6 @@
 # Daily backup of the attendance database (classes, marks, answers, log).
 # Writes a full SQL dump to backups\attendance\ in the tools folder that contains this repository
-# (F:\GDriveMay\Maysam\01_online_tools\backups\attendance), which lives in Google Drive and is never committed.
+# (F:\GDriveMay\Maysam\01_software\online\backups\attendance), which lives in Google Drive and is never committed.
 # Restore one with:  npx wrangler d1 execute attendance --remote --file "<that folder>\<file>.sql"
 # Registered as a Windows scheduled task "attendance backup" (see backup/README.txt).
 # -IfMissing: stop at once when today's dump exists. The scheduled task passes it and starts the script

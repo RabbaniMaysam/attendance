@@ -205,6 +205,14 @@
       setD(d);
       // A quiet refresh leaves a form the instructor is typing in alone.
       var a = document.activeElement, typing = a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.type !== 'checkbox';
+      // The grid's name filter is the exception: the grid stays live, and the box gets its focus and caret back.
+      if (!busy && a && a.id === 'nameFilter') {
+        var s0 = a.selectionStart, s1 = a.selectionEnd;
+        render();
+        var f = document.getElementById('nameFilter');
+        if (f) { f.focus(); try { f.setSelectionRange(s0, s1); } catch (e) {} }
+        return;
+      }
       if (!busy && !(quiet && typing)) render();
     }).catch(function (e) { if (!quiet) fail(e); });
   }
@@ -696,6 +704,7 @@
   // ---- Attendance grid
   var gridView = '';  // 'today' (this day's rounds, the live view) or 'all'; chosen on first draw
   var showExcluded = false, excludeMode = false, removeMode = false;  // the "Exclude dates" and "Remove rounds" checkbox rows
+  var nameFilter = '';  // the grid's "Find a student" box: only students whose name contains it are shown
   function counted(x) { return D.state.exclude.indexOf(x.date) === -1; }
   /** Excludes or includes a date after a confirmation; redraws either way (a cancelled change resets its checkbox). */
   function toggleDate(date) {
@@ -789,6 +798,18 @@
       el('span', { class: 'muted', text: locked ? 'Attendance is open: the grid is live and read-only. Cells can be changed after it closes.'
         : 'Click cells to change them, then save. Nothing changes until you save.' }));
     card.appendChild(switcher);
+    // The name filter: hides the rows of the students whose name does not contain the typed letters, as they are typed
+    // (no redraw, so the box keeps its focus). The "Present" rows keep counting the whole class.
+    var nameRows = [];
+    var findIn = el('input', { type: 'search', id: 'nameFilter', value: nameFilter, placeholder: 'Find a student (type part of a name)', size: 32, autocomplete: 'off' });
+    var findNote = el('span', { class: 'muted' });
+    var applyFilter = function () {
+      var q = nameFilter.trim().toLowerCase(), k = 0;
+      nameRows.forEach(function (x) { var hit = !q || x.name.indexOf(q) !== -1; x.tr.style.display = hit ? '' : 'none'; if (hit) k++; });
+      findNote.textContent = q ? k + ' of ' + nameRows.length + ' students shown' : '';
+    };
+    findIn.addEventListener('input', function () { nameFilter = findIn.value; applyFilter(); });
+    card.appendChild(el('div', { class: 'row', style: 'margin-top:8px' }, findIn, findNote));
     if (marksDirty()) {
       var k = pendingList().length;
       card.appendChild(el('div', { class: 'banner note savebar' }, el('b', { text: k + ' unsaved change' + (k === 1 ? '' : 's') }),
@@ -869,7 +890,9 @@
       if (showPoints) tr.appendChild(el('td', { class: 'total', title: 'of ' + num(st.possible, 2) + ' possible so far, ' + num(R.total, 2) + ' in the semester', text: num(st.points, 2) }));
       tr.appendChild(el('td', { class: 'total', text: (up ? '+' + up : '') + (up && down ? ' ' : '') + (down ? '−' + down : '') }));
       t.appendChild(tr);
+      nameRows.push({ tr: tr, name: (fullName(r) + ' | ' + r.first + ' ' + r.last).toLowerCase() });
     });
+    applyFilter();
     t.appendChild(totRow());
     card.appendChild(el('div', { class: 'scroll' }, t));
     card.appendChild(el('p', { class: 'muted', style: 'margin-top:10px' },

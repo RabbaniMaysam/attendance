@@ -839,6 +839,14 @@
       for (var jj = 0; jj < 3 + (showPoints ? 1 : 0); jj++) rm.appendChild(el('td'));
       t.appendChild(rm);
     }
+    // the count of students present in each round, shown above the names and again below them
+    var totRow = function () {
+      var tot = el('tr', {}, el('td', { class: 'name', text: 'Present' }));
+      rounds.forEach(function (x) { tot.appendChild(el('td', { class: 'mark' + (counted(x) ? '' : ' out'), text: String(S.roster.filter(function (r) { return has(x.id, r.email); }).length) })); });
+      for (var i = 0; i < 3 + (showPoints ? 1 : 0); i++) tot.appendChild(el('td'));
+      return tot;
+    };
+    t.appendChild(totRow());
     S.roster.forEach(function (r) {
       var tr = el('tr', {}, el('td', { class: 'name' }, fullName(r), el('div', { class: 'muted', text: r.email })));
       var n = 0, up = 0, down = 0, st = R.students[r.email];
@@ -862,10 +870,7 @@
       tr.appendChild(el('td', { class: 'total', text: (up ? '+' + up : '') + (up && down ? ' ' : '') + (down ? '−' + down : '') }));
       t.appendChild(tr);
     });
-    var tot = el('tr', {}, el('td', { class: 'name', text: 'Present' }));
-    rounds.forEach(function (x) { tot.appendChild(el('td', { class: 'mark' + (counted(x) ? '' : ' out'), text: String(S.roster.filter(function (r) { return has(x.id, r.email); }).length) })); });
-    for (var i = 0; i < 3 + (showPoints ? 1 : 0); i++) tot.appendChild(el('td'));
-    t.appendChild(tot);
+    t.appendChild(totRow());
     card.appendChild(el('div', { class: 'scroll' }, t));
     card.appendChild(el('p', { class: 'muted', style: 'margin-top:10px' },
       el('span', { class: 'swatch on' }), ' marked by the student during the round; ', el('span', { class: 'swatch inst' }),
